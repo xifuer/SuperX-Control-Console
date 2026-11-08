@@ -190,9 +190,8 @@ namespace RyzenTuner
             TurboVk = 164;       // VK_LMENU
             TurboScan = 56;      // Alt 扫描码
             TurboMods = 9;       // Ctrl + Win
-            TurboName = "TURBO";
-            TurboVk = 0; TurboScan = 0; TurboPage = 0; TurboUsage = 0;
-            TurboName = "";
+            TurboName = "Ctrl+Win+LMenu";
+            TurboPage = 0; TurboUsage = 0; TurboPadMask = 0;
             RgbEnabled = false;
             RgbMode = "static";
             RgbR = 255; RgbG = 0; RgbB = 0;
@@ -244,7 +243,21 @@ namespace RyzenTuner
                 }
             }
             catch { }
+            Migrate(s);
             return s;
+        }
+
+        private static void Migrate(Settings s)
+        {
+            // 旧版本默认值被清零，这里恢复 TURBO 默认绑定（用户显式「清除」时 TurboKind 为 none，不会命中）
+            if (string.IsNullOrEmpty(s.TurboKind)) s.TurboKind = "key";
+            if (s.TurboKind == "key" && s.TurboVk == 0 && s.TurboScan == 0)
+            {
+                s.TurboVk = 164;     // VK_LMENU
+                s.TurboScan = 56;    // Alt 扫描码
+                s.TurboMods = 9;     // Ctrl + Win
+                s.TurboName = "Ctrl+Win+LMenu";
+            }
         }
 
         private static void Apply(Settings s, string k, string v)
