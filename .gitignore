@@ -1,0 +1,31 @@
+# 构建产物
+*.exe
+*.dll
+*.sys
+*.pdb
+*.ilk
+*.obj
+*.exp
+*.lib
+*.resource
+
+# 用户配置与日志
+settings.ini
+logs/
+crash.log
+
+# 安装包中间产物
+installer/payload/
+installer/payload.zip
+
+# 编辑器
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store
