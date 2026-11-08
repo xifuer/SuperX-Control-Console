@@ -13,7 +13,7 @@ namespace RyzenTunerSetup
     {
         public const string AppName = "功耗控制台";
         public const string AppExe = "RyzenTuner.exe";
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.3";
         public const string RegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RyzenTuner";
 
         [STAThread]
@@ -26,6 +26,7 @@ namespace RyzenTunerSetup
             string dir = null;
             bool noTask = false;
             bool noRun = false;
+            string shot = null;
 
             // 双击 uninstall.exe 时直接走卸载，不需要参数
             bool uninstall = Path.GetFileName(SetupPath).Equals("uninstall.exe", StringComparison.OrdinalIgnoreCase);
@@ -38,6 +39,23 @@ namespace RyzenTunerSetup
                 else if (a == "/noshortcuts" || a == "/notask") noTask = true;
                 else if (a == "/norun") noRun = true;
                 else if (a == "/dir" && i + 1 < args.Length) { dir = args[++i]; i++; }
+                else if (a == "/shot" && i + 1 < args.Length) { shot = args[++i]; i++; }
+            }
+
+            if (shot != null)
+            {
+                SetupForm f = new SetupForm(dir);
+                f.Show();
+                Application.DoEvents();
+                System.Threading.Thread.Sleep(300);
+                Application.DoEvents();
+                using (System.Drawing.Bitmap bmp = new System.Drawing.Bitmap(f.Width, f.Height))
+                {
+                    f.DrawToBitmap(bmp, new System.Drawing.Rectangle(0, 0, f.Width, f.Height));
+                    bmp.Save(shot, System.Drawing.Imaging.ImageFormat.Png);
+                }
+                f.Close();
+                return;
             }
 
             if (uninstall) { Uninstall(silent); return; }
@@ -266,6 +284,7 @@ namespace RyzenTunerSetup
     internal sealed class SetupForm : Form
     {
         private readonly string _presetDir;
+        private readonly float _sc;
         private TextBox _txtDir;
         private CheckBox _chkStart;
         private CheckBox _chkRun;
@@ -274,57 +293,71 @@ namespace RyzenTunerSetup
         private ProgressBar _bar;
 
         private static readonly Color Bg = Color.FromArgb(14, 14, 16);
-        private static readonly Color Card = Color.FromArgb(23, 23, 26);
-        private static readonly Color Text = Color.FromArgb(242, 242, 242);
-        private static readonly Color Dim = Color.FromArgb(154, 154, 154);
+        private static readonly Color CardC = Color.FromArgb(23, 23, 26);
+        private static readonly Color Fg = Color.FromArgb(242, 242, 242);
+        private static readonly Color DimC = Color.FromArgb(154, 154, 154);
         private static readonly Color Accent = Color.FromArgb(226, 59, 46);
+
+        private int S(int v) { return (int)Math.Round(v * _sc); }
+        private Rectangle R(int x, int y, int w, int h) { return new Rectangle(S(x), S(y), S(w), S(h)); }
+        private Font Fnt(float size, FontStyle style) { return new Font("Microsoft YaHei UI", size, style); }
 
         public SetupForm(string presetDir)
         {
             _presetDir = presetDir;
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) _sc = g.DpiX / 96f;
 
             base.Text = "安装 " + Program.AppName;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterScreen;
             MaximizeBox = false;
             MinimizeBox = false;
-            ClientSize = new Size(480, 320);
+            ShowInTaskbar = true;
+            ClientSize = new Size(S(520), S(400));
             BackColor = Bg;
-            ForeColor = Text;
-            Font = new Font("Microsoft YaHei UI", 9f);
+            ForeColor = Fg;
+            Font = Fnt(9f, FontStyle.Regular);
+            AutoScaleMode = AutoScaleMode.None;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             Panel head = new Panel();
-            head.Bounds = new Rectangle(0, 0, 480, 78);
+            head.Bounds = R(0, 0, 520, 84);
             head.BackColor = Accent;
             Controls.Add(head);
 
             Label t = new Label();
             t.Text = Program.AppName;
             t.ForeColor = Color.White;
-            t.Font = new Font("Microsoft YaHei UI", 16f, FontStyle.Bold);
+            t.Font = Fnt(16f, FontStyle.Bold);
             t.AutoSize = false;
-            t.Bounds = new Rectangle(22, 12, 300, 32);
+            t.Bounds = R(22, 12, 440, 34);
             head.Controls.Add(t);
 
             Label sub = new Label();
-            sub.Text = "Ryzen AI MAX+ 395 · 壹号本 SUPER X   v" + Program.Version;
-            sub.ForeColor = Color.FromArgb(255, 215, 210);
-            sub.Font = new Font("Microsoft YaHei UI", 8.5f);
+            sub.Text = "Ryzen AI MAX+ 395 · 壹号本 SUPER X    v" + Program.Version;
+            sub.ForeColor = Color.FromArgb(255, 220, 215);
+            sub.Font = Fnt(8.5f, FontStyle.Regular);
             sub.AutoSize = false;
-            sub.Bounds = new Rectangle(22, 46, 420, 20);
+            sub.Bounds = R(22, 50, 460, 22);
             head.Controls.Add(sub);
 
-            AddLabel("安装位置", 22, 96);
+            Label lDir = new Label();
+            lDir.Text = "安装位置";
+            lDir.ForeColor = DimC;
+            lDir.Font = Fnt(8.5f, FontStyle.Regular);
+            lDir.Bounds = R(22, 100, 200, 20);
+            Controls.Add(lDir);
+
             _txtDir = new TextBox();
-            _txtDir.Bounds = new Rectangle(22, 120, 360, 26);
-            _txtDir.BackColor = Card;
-            _txtDir.ForeColor = Text;
+            _txtDir.Bounds = R(22, 124, 380, 28);
+            _txtDir.BackColor = CardC;
+            _txtDir.ForeColor = Fg;
             _txtDir.BorderStyle = BorderStyle.FixedSingle;
+            _txtDir.Font = Fnt(9f, FontStyle.Regular);
             _txtDir.Text = string.IsNullOrEmpty(_presetDir) ? Program.DefaultDir() : _presetDir;
             Controls.Add(_txtDir);
 
-            Button browse = MakeButton("浏览…", 390, 119, 68, 28, false);
+            Button browse = MakeButton("浏览…", 412, 123, 86, 30, false);
             browse.Click += delegate
             {
                 using (FolderBrowserDialog fb = new FolderBrowserDialog())
@@ -335,46 +368,46 @@ namespace RyzenTunerSetup
             };
             Controls.Add(browse);
 
-            _chkStart = MakeCheck("开机自动启动（计划任务，最高权限）", 22, 164);
+            _chkStart = MakeCheck("开机自动启动（计划任务，最高权限）", 22, 172);
             _chkStart.Checked = true;
             Controls.Add(_chkStart);
 
-            _chkRun = MakeCheck("安装完成后立即运行", 22, 192);
+            _chkRun = MakeCheck("安装完成后立即运行", 22, 204);
             _chkRun.Checked = true;
             Controls.Add(_chkRun);
 
             _bar = new ProgressBar();
-            _bar.Bounds = new Rectangle(22, 232, 436, 6);
+            _bar.Bounds = R(22, 252, 476, 8);
             _bar.Style = ProgressBarStyle.Continuous;
             Controls.Add(_bar);
 
             _lblStatus = new Label();
             _lblStatus.Text = "准备就绪";
-            _lblStatus.ForeColor = Dim;
-            _lblStatus.Bounds = new Rectangle(22, 244, 300, 20);
+            _lblStatus.ForeColor = DimC;
+            _lblStatus.Font = Fnt(8.5f, FontStyle.Regular);
+            _lblStatus.Bounds = R(22, 266, 380, 22);
             Controls.Add(_lblStatus);
 
-            _btnInstall = MakeButton("安装", 346, 268, 112, 36, true);
+            _btnInstall = MakeButton("安装", 378, 330, 120, 40, true);
+            _btnInstall.Font = Fnt(10f, FontStyle.Bold);
             _btnInstall.Click += delegate { DoInstall(); };
             Controls.Add(_btnInstall);
-        }
 
-        private Label AddLabel(string text, int x, int y)
-        {
-            Label l = new Label();
-            l.Text = text;
-            l.ForeColor = Dim;
-            l.Bounds = new Rectangle(x, y, 200, 20);
-            Controls.Add(l);
-            return l;
+            Label hint = new Label();
+            hint.Text = "将创建桌面与开始菜单快捷方式，并写入卸载信息。";
+            hint.ForeColor = DimC;
+            hint.Font = Fnt(8f, FontStyle.Regular);
+            hint.Bounds = R(22, 300, 340, 22);
+            Controls.Add(hint);
         }
 
         private CheckBox MakeCheck(string text, int x, int y)
         {
             CheckBox c = new CheckBox();
             c.Text = text;
-            c.ForeColor = Text;
-            c.Bounds = new Rectangle(x, y, 400, 24);
+            c.ForeColor = Fg;
+            c.Font = Fnt(9f, FontStyle.Regular);
+            c.Bounds = R(x, y, 470, 26);
             return c;
         }
 
@@ -382,11 +415,12 @@ namespace RyzenTunerSetup
         {
             Button b = new Button();
             b.Text = text;
-            b.Bounds = new Rectangle(x, y, w, h);
+            b.Bounds = R(x, y, w, h);
             b.FlatStyle = FlatStyle.Flat;
-            b.BackColor = primary ? Accent : Card;
-            b.ForeColor = primary ? Color.White : Text;
-            b.FlatAppearance.BorderColor = primary ? Accent : Color.FromArgb(48, 48, 52);
+            b.BackColor = primary ? Accent : CardC;
+            b.ForeColor = primary ? Color.White : Fg;
+            b.Font = Fnt(9f, primary ? FontStyle.Bold : FontStyle.Regular);
+            b.FlatAppearance.BorderColor = primary ? Accent : Color.FromArgb(52, 52, 58);
             b.Cursor = Cursors.Hand;
             return b;
         }
@@ -394,7 +428,7 @@ namespace RyzenTunerSetup
         private void DoInstall()
         {
             string dir = _txtDir.Text.Trim();
-            if (dir.Length == 0) { MessageBox.Show("请填写安装位置"); return; }
+            if (dir.Length == 0) { MessageBox.Show(this, "请填写安装位置"); return; }
 
             _btnInstall.Enabled = false;
             _lblStatus.Text = "正在复制文件…";
@@ -406,14 +440,14 @@ namespace RyzenTunerSetup
                 Program.Install(dir, _chkStart.Checked, _chkRun.Checked);
                 _bar.Value = 100;
                 _lblStatus.Text = "安装完成";
-                MessageBox.Show("安装完成。\n\n桌面和开始菜单已创建快捷方式。", Program.AppName,
+                MessageBox.Show(this, "安装完成。\n\n桌面和开始菜单已创建快捷方式。", Program.AppName,
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Close();
             }
             catch (Exception ex)
             {
                 _lblStatus.Text = "安装失败";
-                MessageBox.Show("安装失败：" + ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, "安装失败：" + ex.Message, Program.AppName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _btnInstall.Enabled = true;
             }
         }
