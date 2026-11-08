@@ -32,6 +32,7 @@ $cscArgs += @(
     "$root\src\Rgb.cs",
     "$root\src\Lighting.cs",
     "$root\src\Pad.cs",
+    "$root\src\Bridge.cs",
     "$root\src\Raw.cs",
     "$root\src\Ui.cs"
 )
