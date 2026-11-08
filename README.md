@@ -24,6 +24,16 @@
 | --- | --- |
 | ![档位](assets/screenshot-profile.png) | ![灯效](assets/screenshot-lighting.png) |
 
+## 与 OneXConsole 共存
+
+壹号本的 TURBO 键由 OneXConsole 接管：它运行时会读取 EC 里的按键，并用 `SendInput` 合成 `Ctrl+Win+Alt`。两者同时访问 SMU/EC 会争用同一个 WinRing0 驱动，可能导致系统卡死。
+
+因此：
+
+- OneXConsole 运行时，本程序不主动读写 SMU/EC，面板上会显示「读取已暂停」
+- 需要完整功耗控制时，请退出 OneXConsole
+- 唤醒键建议使用 F12 等独立按键，避免依赖 TURBO
+
 ## 系统要求
 
 - Windows 10 / 11 x64
