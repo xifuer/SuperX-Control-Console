@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "1.0.0"
 )
 
@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Path $payload -Force | Out-Null
 $files = @(
     @{ Src = "$root\RyzenTuner.exe";      Dst = 'RyzenTuner.exe' }
     @{ Src = "$root\libryzenadj.dll";     Dst = 'libryzenadj.dll' }
+    @{ Src = "$root\WinRing0x64.dll";     Dst = 'WinRing0x64.dll' }
     @{ Src = "$root\WinRing0x64.sys";     Dst = 'WinRing0x64.sys' }
     @{ Src = "$root\inpoutx64.dll";       Dst = 'inpoutx64.dll' }
     @{ Src = "$root\assets\app.ico";      Dst = 'app.ico' }
