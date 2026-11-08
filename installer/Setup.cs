@@ -26,15 +26,21 @@ namespace RyzenTunerSetup
             string dir = null;
             bool noTask = false;
             bool noRun = false;
+
+            // 双击 uninstall.exe 时直接走卸载，不需要参数
+            bool uninstall = Path.GetFileName(SetupPath).Equals("uninstall.exe", StringComparison.OrdinalIgnoreCase);
+
             for (int i = 0; i < args.Length; i++)
             {
                 string a = args[i].ToLowerInvariant();
-                if (a == "/uninstall" || a == "--uninstall") { UninstallInteractive(); return; }
-                if (a == "/silent" || a == "/s") silent = true;
-                if (a == "/noshortcuts" || a == "/notask") noTask = true;
-                if (a == "/norun") noRun = true;
-                if (a == "/dir" && i + 1 < args.Length) dir = args[++i];
+                if (a == "/uninstall" || a == "--uninstall" || a == "/u") uninstall = true;
+                else if (a == "/silent" || a == "/s") silent = true;
+                else if (a == "/noshortcuts" || a == "/notask") noTask = true;
+                else if (a == "/norun") noRun = true;
+                else if (a == "/dir" && i + 1 < args.Length) { dir = args[++i]; i++; }
             }
+
+            if (uninstall) { Uninstall(silent); return; }
 
             if (silent)
             {
@@ -191,23 +197,36 @@ namespace RyzenTunerSetup
             catch { }
         }
 
-        public static void UninstallInteractive()
+        public static void Uninstall(bool silent)
         {
             string dir = Path.GetDirectoryName(SetupPath);
-            if (MessageBox.Show("确定要卸载 " + AppName + " 吗？\n\n安装目录：" + dir, "卸载",
+
+            // 安全校验：只允许删除确实包含本程序的目录
+            if (!File.Exists(Path.Combine(dir, AppExe)))
+            {
+                if (!silent) MessageBox.Show("当前目录不是 " + AppName + " 的安装位置：\n" + dir, "卸载",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!silent && MessageBox.Show("确定要卸载 " + AppName + " 吗？\n\n安装目录：" + dir, "卸载",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
 
+            // 1) 结束正在运行的实例，并等待退出
             try
             {
                 foreach (Process p in Process.GetProcessesByName("RyzenTuner"))
                 {
-                    try { p.Kill(); } catch { }
+                    try { p.Kill(); p.WaitForExit(4000); } catch { }
                 }
+                System.Threading.Thread.Sleep(600);
             }
             catch { }
 
+            // 2) 计划任务
             DeleteTask();
 
+            // 3) 快捷方式
             try
             {
                 string lnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");
@@ -217,21 +236,30 @@ namespace RyzenTunerSetup
             }
             catch { }
 
+            // 4) 注册表
             try { Registry.LocalMachine.DeleteSubKeyTree(RegKey, false); } catch { }
 
-            // 自删除：先复制到临时目录再删
+            // 5) 延迟自删除：用临时批处理等待本进程退出后整目录删除
             try
             {
-                string tmp = Path.Combine(Path.GetTempPath(), "ryzentuner_uninst.exe");
-                File.Copy(SetupPath, tmp, true);
-                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe",
-                    "/c ping 127.0.0.1 -n 3 > nul & del /f /q \"" + dir + "\" /s /q & rmdir /s /q \"" + dir + "\" & del /f /q \"" + tmp + "\"");
+                string cmdPath = Path.Combine(Path.GetTempPath(), "superx_uninstall_" + Guid.NewGuid().ToString("N") + ".cmd");
+                string script =
+                    "@echo off\r\n" +
+                    "ping 127.0.0.1 -n 3 > nul\r\n" +
+                    "rmdir /s /q \"" + dir + "\"\r\n" +
+                    "del /f /q \"%~f0\"\r\n";
+                File.WriteAllText(cmdPath, script, System.Text.Encoding.Default);
+
+                ProcessStartInfo psi = new ProcessStartInfo("cmd.exe", "/c \"\"" + cmdPath + "\"\"");
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
                 Process.Start(psi);
             }
             catch { }
-            MessageBox.Show("已卸载。", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            if (!silent)
+                MessageBox.Show("已卸载。\n\n目录将在几秒后删除完毕。", AppName, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
     }
 
