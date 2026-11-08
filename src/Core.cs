@@ -187,10 +187,10 @@ namespace RyzenTuner
             DcinFast = 85; DcinSlow = 65; DcinTctl = 95; DcinPs = false; DcinMp = true;
 
             TurboKind = "key";
-            TurboVk = 164;       // VK_LMENU
-            TurboScan = 56;      // Alt 扫描码
-            TurboMods = 9;       // Ctrl + Win
-            TurboName = "Ctrl+Win+LMenu";
+            TurboVk = 123;       // VK_F12
+            TurboScan = 88;      // F12 扫描码
+            TurboMods = 0;
+            TurboName = "F12";
             TurboPage = 0; TurboUsage = 0; TurboPadMask = 0;
             RgbEnabled = false;
             RgbMode = "static";
@@ -253,10 +253,10 @@ namespace RyzenTuner
             if (string.IsNullOrEmpty(s.TurboKind)) s.TurboKind = "key";
             if (s.TurboKind == "key" && s.TurboVk == 0 && s.TurboScan == 0)
             {
-                s.TurboVk = 164;     // VK_LMENU
-                s.TurboScan = 56;    // Alt 扫描码
-                s.TurboMods = 9;     // Ctrl + Win
-                s.TurboName = "Ctrl+Win+LMenu";
+                s.TurboVk = 123;     // VK_F12
+                s.TurboScan = 88;    // F12 扫描码
+                s.TurboMods = 0;
+                s.TurboName = "F12";
             }
         }
 
@@ -515,6 +515,23 @@ namespace RyzenTuner
             }
         }
 
+        public bool TryReadLimits(out float fast, out float slow, out float tctl)
+        {
+            fast = slow = tctl = 0;
+            if (!Ready) return false;
+            try
+            {
+                if (Rz.refresh_table(_ry) != 0) return false;
+                fast = Rz.get_fast_limit(_ry);
+                slow = Rz.get_slow_limit(_ry);
+                tctl = Rz.get_tctl_temp(_ry);
+                if (fast > 1000) fast = fast / 1000f;
+                if (slow > 1000) slow = slow / 1000f;
+                return true;
+            }
+            catch { return false; }
+        }
+
         public static bool OnAc
         {
             get
@@ -611,6 +628,8 @@ namespace RyzenTuner
             try
             {
                 if (!EnsureDriver()) return null;
+                // OneXConsole 在运行时它独占 EC，我们不再抢读
+                if (System.Diagnostics.Process.GetProcessesByName("OneXConsole").Length > 0) return null;
                 int v = ReadRegister(0xFE);
                 if (v < 0) return null;
                 if (v == 1) _cached = "battery";
