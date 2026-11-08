@@ -152,6 +152,7 @@ namespace RyzenTuner
 
         private RawInputForm _raw;
         private LightingController _lighting;
+        private OxPanelWatch _bridge;
         private NotifyIcon _tray;
         private ContextMenuStrip _menu;
         private MainForm _form;
@@ -165,6 +166,12 @@ namespace RyzenTuner
         private string _source = "battery";
         private string _status = "";
         private int _failCount;
+        private float _obsFast = -1, _obsSlow = -1, _obsTctl = -1;
+        private float _sentFast = -1, _sentSlow = -1, _sentTctl = -1;
+        private DateTime _lastApplyAt = DateTime.MinValue;
+        private DateTime _lastExternalAt = DateTime.MinValue;
+        private DateTime _restoreAt = DateTime.MinValue;
+        private const bool RestoreAfterExternal = false;   // 写回会与 OneXConsole 抢 SMU 邮箱，导致卡死，默认关闭
 
         public string EngineDir()
         {
@@ -197,6 +204,11 @@ namespace RyzenTuner
             _raw = new RawInputForm();
             _raw.HidInput += OnHidInput;
 
+            _bridge = new OxPanelWatch();
+            _bridge.Enabled = false;   // 安全模式：不监听 OneXConsole 面板，避免反复开关窗口
+            _bridge.Triggered += delegate { ToggleForm(); };
+            if (_bridge.Enabled) _bridge.Start();
+
             _lighting = new LightingController();
             if (Cfg.RgbEnabled) { try { ApplyLighting(true); } catch { } }
 
@@ -204,7 +216,7 @@ namespace RyzenTuner
             BuildMenu();
 
             _poll = new System.Windows.Forms.Timer();
-            _poll.Interval = 2000;
+            _poll.Interval = 800;
             _poll.Tick += delegate { OnTick(); };
             _poll.Start();
 
@@ -393,6 +405,61 @@ namespace RyzenTuner
             ShowForm();
         }
 
+        public static bool OneXRunning()
+        {
+            try { return Process.GetProcessesByName("OneXConsole").Length > 0; } catch { return false; }
+        }
+
+        private void CheckExternalLimits()
+        {
+            // OneXConsole 在跑时它高频访问 EC/SMU，我们再去读会争用总线导致卡死
+            if (OneXRunning()) return;
+
+            float f, s, t;
+            if (!Eng.TryReadLimits(out f, out s, out t)) return;
+
+            if (_obsFast < 0)
+            {
+                _obsFast = f; _obsSlow = s; _obsTctl = t;
+                return;
+            }
+
+            bool changed = Math.Abs(f - _obsFast) >= 1.0f || Math.Abs(s - _obsSlow) >= 1.0f || Math.Abs(t - _obsTctl) >= 1.0f;
+            if (!changed) return;
+
+            _obsFast = f; _obsSlow = s; _obsTctl = t;
+
+            // 只有“与最后一次写入值不同”才算外部改动；这样我们自己的下发不会误触发
+            bool isOurs = Math.Abs(f - _sentFast) < 0.8f && Math.Abs(s - _sentSlow) < 0.8f && Math.Abs(t - _sentTctl) < 0.8f;
+            if (isOurs) return;
+            if ((DateTime.Now - _lastExternalAt).TotalMilliseconds < 800) return;
+            _lastExternalAt = DateTime.Now;
+
+            Log(string.Format("检测到外部功耗变更: FAST {0:0.#}W / SLOW {1:0.#}W / {2:0}℃ → 视为 TURBO", f, s, t));
+            ToggleForm();
+            // 不在按键瞬间写回：连续按键会造成 SMU 写入风暴，等静止 3 秒后只恢复一次
+            _restoreAt = DateTime.Now.AddSeconds(3);
+        }
+
+        private void CloseOxPanelsSoon()
+        {
+            // 等 OneXConsole 的快捷面板弹出来再关掉它，只保留我们的界面
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = 450;
+            t.Tick += delegate
+            {
+                t.Stop();
+                t.Dispose();
+                try
+                {
+                    int n = OxPanelWatch.CloseQuickPanels();
+                    if (n > 0) Log("已关闭 OneXConsole 快捷面板 " + n + " 个");
+                }
+                catch { }
+            };
+            t.Start();
+        }
+
         public void ShowForm()
         {
             if (_form == null || _form.IsDisposed)
@@ -488,6 +555,7 @@ namespace RyzenTuner
 
         public void OnTick()
         {
+            // TURBO 通过键盘钩子触发，这里不再轮询 SMU（避免与 OneXConsole 争用导致卡死）
             string prev = _source;
             RefreshSource();
             if (prev != _source) _appliedKey = "";
@@ -520,7 +588,13 @@ namespace RyzenTuner
 
             bool ok = Eng.Apply(fast, slow, tctl, ps, mp);
             _status = Eng.LastAction;
-            if (ok) { _appliedKey = DesiredKey(); _failCount = 0; }
+            if (ok)
+            {
+                _appliedKey = DesiredKey();
+                _failCount = 0;
+                _lastApplyAt = DateTime.Now;
+                _sentFast = fast; _sentSlow = slow; _sentTctl = tctl;
+            }
             else { _failCount++; }
 
             UpdateTrayText();
@@ -647,6 +721,8 @@ namespace RyzenTuner
         private LightingForm _lightPage;
         private string _editing = "dcin";
         private bool _syncing;
+        private string _cachedLimits;
+        private DateTime _lastLimitsRead = DateTime.MinValue;
 
         public MainForm(TrayApp app)
         {
@@ -1181,7 +1257,18 @@ namespace RyzenTuner
 
             int f, sl, t; bool ps, mp;
             _app.GetTarget(out f, out sl, out t, out ps, out mp);
-            string limits = _app.Eng.ReadLimits();
+
+            string limits;
+            if ((DateTime.Now - _lastLimitsRead).TotalSeconds < 3 && _cachedLimits != null)
+            {
+                limits = _cachedLimits;
+            }
+            else
+            {
+                limits = _app.Eng.ReadLimits();
+                _cachedLimits = limits;
+                _lastLimitsRead = DateTime.Now;
+            }
             _lblLimits.Text = "限制 " + (limits.Length > 0 ? limits : "—") + "  ·  目标 " + f + "/" + sl + "W";
             _lblEngine.Text = _app.Eng.Ready ? "引擎 已连接" : ("引擎 未就绪：" + _app.Eng.Error);
             _lblEngine.ForeColor = _app.Eng.Ready ? Theme.Green : Theme.Red;
@@ -1800,6 +1887,9 @@ namespace RyzenTuner
             string selftest = GetArg(args, "--selftest");
             if (selftest != null) { RunSelfTest(selftest); return; }
 
+            string keylog = GetArg(args, "--keylog");
+            if (keylog != null) { RunKeyLog(keylog); return; }
+
             string srcOut = GetArg(args, "--source");
             if (srcOut != null) { File.WriteAllText(srcOut, "describe=" + PowerSource.Describe() + "\ndetect=" + (PowerSource.Detect() ?? "<null>") + "\n"); return; }
 
@@ -2097,6 +2187,39 @@ namespace RyzenTuner
                 }
             }
             app.Shutdown();
+        }
+
+        private static void RunKeyLog(string path)
+        {
+            StreamWriter sw = new StreamWriter(path, false, Encoding.UTF8);
+            sw.AutoFlush = true;
+            sw.WriteLine("START " + DateTime.Now.ToString("HH:mm:ss.fff"));
+            KeyHook hook = new KeyHook();
+            hook.KeyPressed += delegate(int vk, int scan, string name)
+            {
+                sw.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff") + "  vk=0x" + vk.ToString("X2") + " scan=0x" + scan.ToString("X2") + " mods=" + KeyHook.CurrentMods + "  " + name);
+            };
+            hook.Start();
+
+            // WH_KEYBOARD_LL 必须泵消息才能收到回调，这里用一个隐形窗体维持消息循环
+            Form host = new Form();
+            host.ShowInTaskbar = false;
+            host.FormBorderStyle = FormBorderStyle.None;
+            host.StartPosition = FormStartPosition.Manual;
+            host.Location = new Point(-32000, -32000);
+            host.Size = new Size(1, 1);
+            host.Opacity = 0;
+
+            System.Windows.Forms.Timer stop = new System.Windows.Forms.Timer();
+            stop.Interval = 90000;
+            stop.Tick += delegate { stop.Stop(); Application.Exit(); };
+            stop.Start();
+
+            Application.Run(host);
+
+            hook.Dispose();
+            sw.WriteLine("END");
+            sw.Close();
         }
 
         private static void RunShot(string path)
