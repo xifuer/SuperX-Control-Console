@@ -1,4 +1,4 @@
-# 功耗控制台 · RyzenPowerTuner
+﻿# 功耗控制台 · RyzenPowerTuner
 
 面向 **壹号本 ONEXPLAYER SUPER X**（Ryzen AI MAX+ 395 / Strix Halo）的功耗与机身材质灯控制工具，同时兼容任何使用 `libryzenadj` 的 AMD 平台。
 
@@ -29,7 +29,7 @@
 - Windows 10 / 11 x64
 - .NET Framework 4.8（系统自带）
 - 管理员权限（写 SMU 与 EC 必需）
-- [libryzenadj](https://github.com/FlyGoat/RyzenAdj) 的 `libryzenadj.dll` 与 `WinRing0x64.sys`
+- [libryzenadj](https://github.com/FlyGoat/RyzenAdj) 的 `libryzenadj.dll`、`WinRing0x64.dll` 与 `WinRing0x64.sys`
 - 可选：`inpoutx64.dll` 与已安装的 `inpoutx64` 驱动服务（用于 EC 供电识别）
 
 ## 构建
@@ -87,6 +87,24 @@
 - Strix Halo 默认功耗墙约 55–71 W，超过部分可能被 SMU 拒绝（日志会记录返回值）
 - Type-C / DC-IN 区分依赖 EC 访问；若 `inpoutx64` 驱动未安装，会自动回退到「电池 / 外接」两级判断
 - 灯效协议按该机型逆向所得，其他机型不保证通用
+
+## 常见问题
+
+**启动提示「无法加载 libryzenadj.dll（Win32 126）」**
+
+`libryzenadj.dll` 依赖 `WinRing0x64.dll`（用户态库），只放 `WinRing0x64.sys` 不够。三个文件必须与 `RyzenTuner.exe` 在同一目录：
+
+```
+RyzenTuner.exe
+libryzenadj.dll
+WinRing0x64.dll      ← 容易遗漏
+WinRing0x64.sys
+inpoutx64.dll        （可选，仅供电识别需要）
+```
+
+**灯效不响应**
+
+先确认设备是 `1A2C:B001`（MI_00），再检查报文首字节是否为报告 ID `0x00`、总长 65 字节。详见 [docs/PROTOCOL.md](docs/PROTOCOL.md)。
 
 ## 免责声明
 
