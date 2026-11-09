@@ -1,5 +1,18 @@
 ﻿# 更新日志
 
+## 1.0.10 (2026-11)
+
+### 新增
+- **自带硬件层**：`vendor\` 优先于 OneXConsole 安装目录，也可用 `settings.ini` 的 `VendorDir` 指定任意路径
+- `tools/collect-vendor.ps1`：从已安装的 OneXConsole 一键采集硬件层到程序目录
+- `docs/VENDOR.md`：说明 TURBO 对硬件层的依赖、采集步骤与许可注意事项
+- `RyzenTuner.exe --probe out.txt`：一次性输出引擎限制、EC 供电、亮度音量、灯效、硬件层状态
+
+### 变更
+- **公开安装包不再包含厂商二进制**（`CompatLayerCT.exe` 等），改为本机采集
+- 启动日志会记录实际使用的硬件层路径，缺失时给出明确提示
+
+
 ## 1.0.7 (2026-11)
 
 ### 新增
