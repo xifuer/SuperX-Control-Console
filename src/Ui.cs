@@ -156,6 +156,8 @@ namespace RyzenTuner
         private VendorPipe _vpipe;
         private EventWaitHandle _turboEvent;
         private DateTime _lastTurboAt = DateTime.MinValue;
+        private DateTime _lastCtrlAt = DateTime.MinValue;
+        private DateTime _lastWinAt = DateTime.MinValue;
         public static string CfgAnim = "elegant";
         private NotifyIcon _tray;
         private ContextMenuStrip _menu;
@@ -512,8 +514,9 @@ namespace RyzenTuner
 
         public void TurboToggle()
         {
-            if ((DateTime.Now - _lastTurboAt).TotalMilliseconds < 400) return;
+            if ((DateTime.Now - _lastTurboAt).TotalMilliseconds < 250) return;   // 仅防抖，避免同一次按键被两条通道重复触发
             _lastTurboAt = DateTime.Now;
+            Log("唤醒触发 → " + (_form != null && !_form.IsDisposed && _form.Visible ? "关闭" : "打开"));
             ToggleForm();
         }
 
@@ -762,6 +765,13 @@ namespace RyzenTuner
         private void OnKeyPressed(int vk, int scan, string name)
         {
             if (Hook.Learning) return;
+
+            // 记录修饰键事件时间，供“顺序匹配”使用
+            if (vk == 0x11) _lastCtrlAt = DateTime.Now;
+            if (vk == 0x5B || vk == 0x5C) _lastWinAt = DateTime.Now;
+            if (scan == 0x38 || vk == 0xA4 || vk == 0x12)
+                Log("按键: vk=0x" + vk.ToString("X2") + " scan=0x" + scan.ToString("X2") + " mods=" + KeyHook.CurrentMods);
+
             if (Cfg.TurboKind != "key") return;
 
             // 优先用扫描码区分：功能键常伪装成 Ctrl/Shift，VK 会与真实按键冲突
@@ -770,7 +780,10 @@ namespace RyzenTuner
             else if (Cfg.TurboVk != 0) hit = (vk == Cfg.TurboVk);
             else hit = false;
 
-            if (hit && KeyHook.ModsFor(vk) == Cfg.TurboMods) { TurboToggle(); return; }
+            bool seqCtrlWin = (Cfg.TurboScan == 56) &&
+                              (DateTime.Now - _lastCtrlAt).TotalMilliseconds < 500 &&
+                              (DateTime.Now - _lastWinAt).TotalMilliseconds < 500;
+            if (hit && (KeyHook.ModsFor(vk) == Cfg.TurboMods || seqCtrlWin)) { TurboToggle(); return; }
 
             // 自定义唤醒键
             if (Cfg.CustomScan != 0 || Cfg.CustomVk != 0)
@@ -865,6 +878,7 @@ namespace RyzenTuner
         private System.Windows.Forms.Timer _avTimer;
         private string _lastStatus;
         private bool _dialogOpen;
+        private DateTime _ignoreDeactivateUntil = DateTime.MinValue;
         private System.Windows.Forms.Timer _animTimer;
         private int _animTarget;
         private Action _animDone;
@@ -891,7 +905,9 @@ namespace RyzenTuner
             Icon = TrayApp.MakeIcon();
             Deactivate += delegate
             {
-                if (!_dialogOpen) HideAnimated();
+                if (_dialogOpen) return;
+                if (DateTime.Now < _ignoreDeactivateUntil) return;
+                HideAnimated();
             };
             PlaceRight();
             Shown += delegate { PlaceRight(); };
@@ -1022,6 +1038,7 @@ namespace RyzenTuner
         public void ShowAnimated()
         {
             if (IsDisposed) return;
+            _ignoreDeactivateUntil = DateTime.Now.AddMilliseconds(500);
             PlaceRight();
             int target = Left;
             if (Elegant)
@@ -1034,6 +1051,7 @@ namespace RyzenTuner
             {
                 Show();
             }
+            try { Activate(); BringToFront(); } catch { }
         }
 
         public void HideAnimated()
@@ -2251,6 +2269,8 @@ namespace RyzenTuner
                 return;
             }
 
+            string probe = GetArg(args, "--probe");
+            if (probe != null) { RunProbe(probe); return; }
             string keylog = GetArg(args, "--keylog");
             if (keylog != null) { RunKeyLog(keylog); return; }
 
@@ -2586,6 +2606,64 @@ namespace RyzenTuner
             sw.Close();
         }
 
+        private static void RunProbe(string path)
+        {
+            StringBuilder sb = new StringBuilder();
+            Settings c = Store.Load();
+            sb.AppendLine("=== RyzenTuner 自检报告 ===");
+            sb.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            sb.AppendLine("模式=" + c.Mode + "  供电覆盖=" + c.SourceOverride);
+            sb.AppendLine("档位: 电池 " + c.BatteryFast + "/" + c.BatterySlow + "/" + c.BatteryTctl +
+                          "  TypeC " + c.TypecFast + "/" + c.TypecSlow + "/" + c.TypecTctl +
+                          "  DCIN " + c.DcinFast + "/" + c.DcinSlow + "/" + c.DcinTctl);
+            sb.AppendLine("性能模式=" + c.PerfActive);
+
+            sb.AppendLine();
+            sb.AppendLine("[引擎]");
+            Engine eng = new Engine();
+            eng.Init(string.IsNullOrEmpty(c.DllDir) ? Store.Dir : c.DllDir);
+            sb.AppendLine("ready=" + eng.Ready + (eng.Ready ? "" : "  error=" + eng.Error));
+            if (eng.Ready) sb.AppendLine("限制: " + eng.ReadLimits());
+
+            sb.AppendLine();
+            sb.AppendLine("[供电]");
+            sb.AppendLine("ACLine=" + Engine.OnAc + "  电池=" + Engine.BatteryPercent + "%");
+            sb.AppendLine("EC: " + PowerSource.Describe());
+            sb.AppendLine("判定: " + (PowerSource.Detect() ?? "<null>"));
+
+            sb.AppendLine();
+            sb.AppendLine("[厂商硬件层]");
+            bool ct = Process.GetProcessesByName("CompatLayerCT").Length > 0;
+            sb.AppendLine("CompatLayerCT 运行=" + ct);
+            sb.AppendLine("vendor 目录=" + Directory.Exists(Path.Combine(Store.Dir, "vendor")));
+
+            sb.AppendLine();
+            sb.AppendLine("[亮度/音量]");
+            sb.AppendLine("亮度=" + Display.GetBrightness() + "%  音量=" + Display.GetVolume() + "%");
+
+            sb.AppendLine();
+            sb.AppendLine("[灯效]");
+            sb.AppendLine("启用=" + c.RgbEnabled + " 模式=" + c.RgbMode + " 颜色=(" + c.RgbR + "," + c.RgbG + "," + c.RgbB + ")");
+            try
+            {
+                RgbDevice d = new RgbDevice();
+                if (d.Open())
+                {
+                    RgbState st = d.GetStatus();
+                    sb.AppendLine("设备: 打开成功  " + (st == null ? "状态无回执" : st.ToString()));
+                    d.Dispose();
+                }
+                else sb.AppendLine("设备: 打开失败 " + d.LastError);
+            }
+            catch (Exception ex) { sb.AppendLine("设备: 异常 " + ex.Message); }
+
+            sb.AppendLine();
+            sb.AppendLine("[按键]");
+            sb.AppendLine("TURBO: " + (string.IsNullOrEmpty(c.TurboName) ? "Ctrl+Win+LMenu" : c.TurboName));
+            sb.AppendLine("自定义: " + (string.IsNullOrEmpty(c.CustomName) ? "未设置" : c.CustomName));
+
+            File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+        }
         private static void RunShot(string path)
         {
             Application.EnableVisualStyles();
