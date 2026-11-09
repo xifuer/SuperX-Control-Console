@@ -899,6 +899,7 @@ namespace RyzenTuner
             AutoScaleMode = AutoScaleMode.None;
             AutoScroll = true;
             TopMost = true;
+            ShowInTaskbar = false;
             _animTimer = new System.Windows.Forms.Timer();
             _animTimer.Interval = 15;
             _animTimer.Tick += delegate { AnimTick(); };
@@ -1085,6 +1086,16 @@ namespace RyzenTuner
             }
             int step = Math.Max(18, Math.Abs(diff) / 3);
             Left += diff > 0 ? step : -step;
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= 0x00000080;   // WS_EX_TOOLWINDOW: hide from taskbar and Alt+Tab
+                return cp;
+            }
         }
 
         protected override void WndProc(ref Message m)
