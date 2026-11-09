@@ -13,7 +13,7 @@ namespace RyzenTunerSetup
     {
         public const string AppName = "功耗控制台";
         public const string AppExe = "RyzenTuner.exe";
-        public const string Version = "1.0.7";
+        public const string Version = "1.0.10";
         public const string RegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RyzenTuner";
 
         [STAThread]
