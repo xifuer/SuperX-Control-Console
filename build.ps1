@@ -11,6 +11,7 @@ if (-not (Test-Path $csc)) { throw "找不到 csc.exe：$csc" }
 $refs = @(
     '/r:System.dll',
     '/r:System.Drawing.dll',
+    '/r:System.Management.dll',
     '/r:System.Windows.Forms.dll'
 )
 
@@ -33,6 +34,7 @@ $cscArgs += @(
     "$root\src\Lighting.cs",
     "$root\src\Pad.cs",
     "$root\src\Bridge.cs",
+    "$root\src\VendorPipe.cs",
     "$root\src\Raw.cs",
     "$root\src\Ui.cs"
 )
