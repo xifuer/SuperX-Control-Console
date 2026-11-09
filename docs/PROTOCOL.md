@@ -1,4 +1,4 @@
-# 协议笔记
+﻿# 协议笔记
 
 本文记录本项目在 **壹号本 ONEXPLAYER SUPER X**（AMD Ryzen AI MAX+ 395）上实测得到的两个硬件接口。这些内容来自抓包与 EC 快照对比，不是厂商文档。
 
@@ -118,3 +118,51 @@ Ctrl + Win + Alt（VK_LMENU = 0xA4，扫描码 0x38）
 ```
 
 EC 侧没有任何寄存器变化，因此它走的是键盘通道，不是 EC 事件。绑定逻辑用「扫描码 + 修饰键完全匹配」，这样单独的 Alt 不会误触发。
+
+## 4. CompatLayerCT 命名管道（OneXConsole 硬件层）
+
+OneXConsole 的所有硬件操作都在 `CompatLayerCT.exe` 里，通过命名管道对外提供。
+
+### 启动
+
+```
+CompatLayerCT.exe <端口> OneXConsole 2
+```
+
+第三个参数 `2` 表示只开管道、不开 HTTP。**必须以普通用户身份启动**：用它自己的管理员上下文启动会自我退出；从提权进程间接启动需要经过资源管理器（例如写一个 VBS 用 `WScript.Shell.Run(..., 0, False)` 拉起）。
+
+### 协议
+
+```
+管道：\\.\pipe\CompatLayerCT         （单客户端）
+请求：{"id":"<uuid>","path":"/xxx/yyy","parameters":{...}}\n
+响应：{"id":"<uuid>","code":1,"msg":null,"result":"<字符串>"}\n
+事件：{"id":"__SocketBizEvent","code":1,"result":"{eventName,eventParams}"}\n
+```
+
+### TURBO 订阅
+
+```
+/keyboard/quickButtonHookStart/1     启动快速按键钩子
+/func/takeOverTurboButton/true       让 EC 接管
+```
+
+之后按键会产生：
+
+```json
+{"eventName":"TurboButtonStatus","eventParams":["1"]}   // 按下
+{"eventName":"TurboButtonStatus","eventParams":["0"]}   // 松开
+```
+
+### 已实测可用的其它路由
+
+| 路由 | 返回 |
+| --- | --- |
+| `/info` | 机型、BIOS、EC 版本、HID 设备列表 |
+| `/battery/getPowerSupplyMode` | 需要厂商初始化序列，未初始化时返回 `1000` |
+| `/func/getOXPSensorInfo` | 同上，未初始化时全 0 |
+
+### 两个坑
+
+1. **EC 争用**：我们的程序直接读 EC（`0x62/0x66`）会打断 CompatLayerCT 的按键轮询，导致 `TurboButtonStatus` 丢失。共存时应降低读取频率（本项目降到 5 秒一次）。
+2. **管道单实例**：OneXConsole 运行时管道被它占用，第三方无法连接；反过来我们的程序占着时 OneXConsole 也连不上。二者只能有一个作为管道客户端。
