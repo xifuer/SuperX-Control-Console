@@ -153,6 +153,10 @@ namespace RyzenTuner
         private RawInputForm _raw;
         private LightingController _lighting;
         private OxPanelWatch _bridge;
+        private VendorPipe _vpipe;
+        private EventWaitHandle _turboEvent;
+        private DateTime _lastTurboAt = DateTime.MinValue;
+        public static string CfgAnim = "elegant";
         private NotifyIcon _tray;
         private ContextMenuStrip _menu;
         private MainForm _form;
@@ -194,6 +198,7 @@ namespace RyzenTuner
         public TrayApp(bool startHidden)
         {
             Cfg = Store.Load();
+            CfgAnim = string.IsNullOrEmpty(Cfg.AnimMode) ? "elegant" : Cfg.AnimMode;
             Eng = new Engine();
             Eng.Init(EngineDir());
 
@@ -203,6 +208,12 @@ namespace RyzenTuner
 
             _raw = new RawInputForm();
             _raw.HidInput += OnHidInput;
+
+            _turboEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\RyzenTunerTurbo");
+            Thread th = new Thread(WaitTurbo);
+            th.IsBackground = true;
+            th.Start();
+            if (!RyzenTuner.MainForm.ShotMode) LaunchPipeHelper();
 
             _bridge = new OxPanelWatch();
             _bridge.Enabled = false;   // 安全模式：不监听 OneXConsole 面板，避免反复开关窗口
@@ -333,7 +344,7 @@ namespace RyzenTuner
             _menu.Items.Add(startup);
 
             ToolStripMenuItem learn = new ToolStripMenuItem("设置 TURBO 按键…");
-            learn.Click += delegate { ShowForm(); if (_form != null) _form.BeginLearn(); };
+            learn.Click += delegate { ShowForm(); if (_form != null) _form.BeginLearn(true); };
             _menu.Items.Add(learn);
 
 
@@ -399,7 +410,7 @@ namespace RyzenTuner
 
             if (_form != null && !_form.IsDisposed && _form.Visible)
             {
-                _form.Hide();
+                _form.HideAnimated();
                 return;
             }
             ShowForm();
@@ -460,13 +471,59 @@ namespace RyzenTuner
             t.Start();
         }
 
+        /// <summary>以普通用户身份启动管道助手（提权进程收不到管道推送事件）。</summary>
+        private void LaunchPipeHelper()
+        {
+            try
+            {
+                // 先清掉可能残留的旧实例（助手没有权限杀它，会导致连到异常实例）
+                foreach (Process old in Process.GetProcessesByName("CompatLayerCT"))
+                {
+                    try { old.Kill(); } catch { }
+                }
+                Thread.Sleep(500);
+
+                string exe = Application.ExecutablePath;
+                string vbs = Path.Combine(Path.GetTempPath(), "ryzentuner_pipe.vbs");
+                string body =
+                    "Set sh = CreateObject(\"WScript.Shell\")\r\n" +
+                    "sh.Run \"\"\"" + exe + "\"\" --pipealert\", 0, False\r\n";
+                File.WriteAllText(vbs, body, Encoding.ASCII);
+                Process.Start("explorer.exe", "\"" + vbs + "\"");
+            }
+            catch (Exception ex) { Log("管道助手启动失败: " + ex.Message); }
+        }
+
+        private void WaitTurbo()
+        {
+            while (true)
+            {
+                try
+                {
+                    if (!_turboEvent.WaitOne(1000)) continue;
+                    if (_form != null && !_form.IsDisposed)
+                        _form.BeginInvoke(new Action(TurboToggle));
+                    else
+                        TurboToggle();
+                }
+                catch { }
+            }
+        }
+
+        public void TurboToggle()
+        {
+            if ((DateTime.Now - _lastTurboAt).TotalMilliseconds < 400) return;
+            _lastTurboAt = DateTime.Now;
+            ToggleForm();
+        }
+
         public void ShowForm()
         {
             if (_form == null || _form.IsDisposed)
             {
                 _form = new MainForm(this);
             }
-            _form.Show();
+            _form.ShowAnimated();
             if (_form.WindowState == FormWindowState.Minimized) _form.WindowState = FormWindowState.Normal;
             _form.Activate();
             _form.BringToFront();
@@ -475,20 +532,93 @@ namespace RyzenTuner
 
         public void OneClickPerformance()
         {
-            Cfg.Mode = "manual";
-            Cfg.ManualW = 120;
-            Cfg.SourceOverride = "auto";
-            Save();
+            if (!Cfg.PerfActive)
+            {
+                int f, s, t; bool ps, mp;
+                ResolveTarget(out f, out s, out t, out ps, out mp);
+
+                // 记录原设置，供再次点击恢复
+                Cfg.PerfActive = true;
+                Cfg.PerfSrc = _source;
+                Cfg.PerfMode = Cfg.Mode;
+                Cfg.PerfFast = f; Cfg.PerfSlow = s; Cfg.PerfTctl = t;
+                Cfg.PerfPs = ps; Cfg.PerfMp = mp;
+
+                Cfg.Mode = "manual";
+                Cfg.ManualW = 120;
+                Save();
+
+                if (Eng.Ready)
+                {
+                    Eng.Apply(120, 120, 95, false, false);
+                    _status = Eng.LastAction;
+                    _appliedKey = DesiredKey();
+                    _lastApplyAt = DateTime.Now;
+                    _sentFast = 120; _sentSlow = 120; _sentTctl = 95;
+                }
+                // 不切换 Windows 电源计划：切换会改动屏幕亮度
+                Log("一键性能模式：120W / 120W / 95℃（原设置已保存）");
+            }
+            else
+            {
+                Cfg.PerfActive = false;
+                Cfg.Mode = string.IsNullOrEmpty(Cfg.PerfMode) ? "auto" : Cfg.PerfMode;
+                RestoreProfile(Cfg.PerfSrc, Cfg.PerfFast, Cfg.PerfSlow, Cfg.PerfTctl, Cfg.PerfPs, Cfg.PerfMp);
+                Save();
+                ApplyNow("perf-restore");
+                Log("已恢复性能模式前的功耗设置");
+            }
+        }
+
+        private void RestoreProfile(string src, int f, int s, int t, bool ps, bool mp)
+        {
+            if (src == "battery")
+            {
+                Cfg.BatteryFast = f; Cfg.BatterySlow = s; Cfg.BatteryTctl = t;
+                Cfg.BatteryPs = ps; Cfg.BatteryMp = mp;
+            }
+            else if (src == "typec")
+            {
+                Cfg.TypecFast = f; Cfg.TypecSlow = s; Cfg.TypecTctl = t;
+                Cfg.TypecPs = ps; Cfg.TypecMp = mp;
+            }
+            else
+            {
+                Cfg.DcinFast = f; Cfg.DcinSlow = s; Cfg.DcinTctl = t;
+                Cfg.DcinPs = ps; Cfg.DcinMp = mp;
+            }
+        }
+
+        private string ActiveScheme()
+        {
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo("powercfg.exe", "/s SCHEME_MIN");
+                ProcessStartInfo psi = new ProcessStartInfo("powercfg.exe", "/getactivescheme");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                using (Process p = Process.Start(psi))
+                {
+                    string outp = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(3000);
+                    int i = outp.IndexOf("GUID:") + 5;
+                    if (i > 4 && outp.Length > i + 36) return outp.Substring(i, 36).Trim();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private void SetScheme(string guid)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("powercfg.exe", "/s " + guid);
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;
                 Process.Start(psi);
             }
             catch { }
-            ApplyNow("perf");
-            Log("一键性能模式：120W + 高性能电源计划");
         }
 
         public void RebuildUi()
@@ -640,7 +770,14 @@ namespace RyzenTuner
             else if (Cfg.TurboVk != 0) hit = (vk == Cfg.TurboVk);
             else hit = false;
 
-            if (hit && KeyHook.ModsFor(vk) == Cfg.TurboMods) ToggleForm();
+            if (hit && KeyHook.ModsFor(vk) == Cfg.TurboMods) { TurboToggle(); return; }
+
+            // 自定义唤醒键
+            if (Cfg.CustomScan != 0 || Cfg.CustomVk != 0)
+            {
+                bool chit = (Cfg.CustomScan != 0) ? (scan == Cfg.CustomScan) : (vk == Cfg.CustomVk);
+                if (chit && KeyHook.ModsFor(vk) == Cfg.CustomMods) TurboToggle();
+            }
         }
 
         private void OnPadTick()
@@ -710,7 +847,7 @@ namespace RyzenTuner
         private readonly TrayApp _app;
         private readonly float _sc;
 
-        private Label _lblSource, _lblBadge, _lblBattery, _lblLimits, _lblEngine, _lblAction, _lblBinding;
+        private Label _lblSource, _lblBadge, _lblBattery, _lblLimits, _lblEngine, _lblAction, _lblBinding, _lblCustom;
         private Label _lblFastValue, _lblSlowValue, _lblTempValue, _lblManualValue, _lblProfileTitle;
         private TrackBar _trkFast, _trkSlow, _trkTemp, _trkManual;
         private CheckBox _chkAuto, _chkManual, _chkPs, _chkMp, _chkStartup, _chkTray;
@@ -722,6 +859,15 @@ namespace RyzenTuner
         private string _editing = "dcin";
         private bool _syncing;
         private string _cachedLimits;
+        private System.Windows.Forms.Timer _applyTimer;
+        private TrackBar _trkBright, _trkVoice;
+        private Label _lblBright, _lblVoice;
+        private System.Windows.Forms.Timer _avTimer;
+        private string _lastStatus;
+        private bool _dialogOpen;
+        private System.Windows.Forms.Timer _animTimer;
+        private int _animTarget;
+        private Action _animDone;
         private DateTime _lastLimitsRead = DateTime.MinValue;
 
         public MainForm(TrayApp app)
@@ -738,7 +884,15 @@ namespace RyzenTuner
             DoubleBuffered = true;
             AutoScaleMode = AutoScaleMode.None;
             AutoScroll = true;
+            TopMost = true;
+            _animTimer = new System.Windows.Forms.Timer();
+            _animTimer.Interval = 15;
+            _animTimer.Tick += delegate { AnimTick(); };
             Icon = TrayApp.MakeIcon();
+            Deactivate += delegate
+            {
+                if (!_dialogOpen) HideAnimated();
+            };
             PlaceRight();
             Shown += delegate { PlaceRight(); };
             if (ShotMode) { StartPosition = FormStartPosition.Manual; Location = new Point(-4000, -4000); }
@@ -863,6 +1017,68 @@ namespace RyzenTuner
             return t;
         }
 
+        private bool Elegant { get { return _app.Cfg.AnimMode != "classic"; } }
+
+        public void ShowAnimated()
+        {
+            if (IsDisposed) return;
+            PlaceRight();
+            int target = Left;
+            if (Elegant)
+            {
+                Left = Screen.PrimaryScreen.WorkingArea.Right;
+                Show();
+                AnimateTo(target, null);
+            }
+            else
+            {
+                Show();
+            }
+        }
+
+        public void HideAnimated()
+        {
+            if (IsDisposed || !Visible) return;
+            if (Elegant)
+                AnimateTo(Screen.PrimaryScreen.WorkingArea.Right, delegate { Hide(); });
+            else
+                Hide();
+        }
+
+        private void AnimateTo(int targetLeft, Action done)
+        {
+            _animTarget = targetLeft;
+            _animDone = done;
+            _animTimer.Stop();
+            _animTimer.Start();
+        }
+
+        private void AnimTick()
+        {
+            int diff = _animTarget - Left;
+            if (Math.Abs(diff) <= 3)
+            {
+                Left = _animTarget;
+                _animTimer.Stop();
+                Action d = _animDone;
+                _animDone = null;
+                if (d != null) d();
+                return;
+            }
+            int step = Math.Max(18, Math.Abs(diff) / 3);
+            Left += diff > 0 ? step : -step;
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == VendorPipe.WmTurbo)
+            {
+                _app.TurboToggle();
+                return;
+            }
+            base.WndProc(ref m);
+        }
+
         private void BuildUi()
         {
             // ---- 顶栏（可拖动）
@@ -885,7 +1101,7 @@ namespace RyzenTuner
 
             Button btnTheme = Btn(head, "主题", 328, 13, 48, 26, delegate { ShowTheme(); });
             btnTheme.Font = F(8f, FontStyle.Regular);
-            Button btnClose = Btn(head, "✕", 382, 13, 34, 26, delegate { Hide(); });
+            Button btnClose = Btn(head, "✕", 382, 13, 34, 26, delegate { HideAnimated(); });
             btnClose.Font = F(9f, FontStyle.Bold);
 
             // ---- 页面容器
@@ -933,7 +1149,7 @@ namespace RyzenTuner
             _lblEngine = Lbl(c1, "", 16, 104, 300, 16, 8f, Theme.Dim, FontStyle.Regular);
             Btn(c1, "…", 354, 100, 36, 24, delegate { ChooseDllDir(); });
             _lblAction = Lbl(c1, "", 16, 128, 376, 18, 8f, Theme.Text, FontStyle.Regular);
-            Lbl(c1, "TURBO 键开关本窗口 · 托盘右键可快速切换档位", 16, 150, 376, 16, 7.5f, Theme.Dim, FontStyle.Regular);
+            Lbl(c1, "按唤醒键开关本窗口（默认 TURBO 的 Ctrl+Win+LMenu）", 16, 150, 376, 16, 7.5f, Theme.Dim, FontStyle.Regular);
 
             Card c2 = AddCard(16, 244, 408, 118, "运行模式");
             _chkAuto = Chk(c2, "自动切换（跟随供电）", 16, 30, 340, OnAutoChanged);
@@ -947,21 +1163,33 @@ namespace RyzenTuner
                 _srcBtns[i].Font = F(8f, FontStyle.Regular);
             }
 
-            Card c3 = AddCard(16, 370, 408, 140, "按键与系统");
-            Lbl(c3, "TURBO 键", 16, 34, 70, 20, 8.5f, Theme.Dim, FontStyle.Regular);
-            _lblBinding = Lbl(c3, "未设置", 92, 34, 168, 20, 8.5f, Theme.Text, FontStyle.Regular);
-            Btn(c3, "学习", 268, 30, 60, 26, delegate { BeginLearn(); });
-            Btn(c3, "清除", 334, 30, 58, 26, delegate
+            Card c3 = AddCard(16, 370, 408, 176, "按键与系统");
+            Lbl(c3, "TURBO 键", 16, 32, 80, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _lblBinding = Lbl(c3, "Ctrl+Win+LMenu", 100, 32, 220, 20, 8.5f, Theme.Text, FontStyle.Regular);
+
+            Lbl(c3, "自定义唤醒", 16, 62, 80, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _lblCustom = Lbl(c3, "未设置", 100, 62, 168, 20, 8.5f, Theme.Text, FontStyle.Regular);
+            Btn(c3, "学习", 268, 58, 60, 26, delegate { BeginLearn(true); });
+            Btn(c3, "清除", 334, 58, 58, 26, delegate
             {
-                _app.Cfg.TurboKind = "none";
-                _app.Cfg.TurboVk = 0; _app.Cfg.TurboScan = 0;
-                _app.Cfg.TurboName = "";
+                _app.Cfg.CustomVk = 0; _app.Cfg.CustomScan = 0;
+                _app.Cfg.CustomMods = 0; _app.Cfg.CustomName = "";
                 _app.Save(); SyncFromSettings();
             });
-            _chkStartup = Chk(c3, "开机自动启动（计划任务）", 16, 70, 340, OnStartupChanged);
-            _chkTray = Chk(c3, "关闭窗口时最小化到托盘", 16, 96, 340, OnTrayChanged);
 
-            Lbl(_pagePower, "设置保存在 settings.ini · 需要管理员权限写 SMU", 18, 522, 380, 18, 7.5f, Theme.Dim, FontStyle.Regular);
+            _chkStartup = Chk(c3, "开机自动启动（计划任务）", 16, 100, 340, OnStartupChanged);
+            _chkTray = Chk(c3, "关闭窗口时最小化到托盘", 16, 126, 340, OnTrayChanged);
+
+            Card c4 = AddCard(16, 554, 408, 118, "亮度与声音");
+            Lbl(c4, "亮度", 16, 36, 70, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _trkBright = Trk(c4, 92, 30, 200, 0, 100, 50, OnBrightnessChanged);
+            _lblBright = Lbl(c4, "—", 304, 36, 80, 20, 9f, Theme.Text, FontStyle.Bold);
+
+            Lbl(c4, "音量", 16, 76, 70, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _trkVoice = Trk(c4, 92, 70, 200, 0, 100, 50, OnVolumeChanged);
+            _lblVoice = Lbl(c4, "—", 304, 76, 80, 20, 9f, Theme.Text, FontStyle.Bold);
+
+            Lbl(_pagePower, "设置保存在 settings.ini · 需要管理员权限写 SMU", 18, 686, 380, 18, 7.5f, Theme.Dim, FontStyle.Regular);
 
             // ==================== 档位页 ====================
             Panel host = _cardHost;
@@ -987,6 +1215,14 @@ namespace RyzenTuner
             _trkTemp = Trk(p2, 100, 120, 196, 60, 110, 95, OnTempChanged);
             _lblTempValue = Lbl(p2, "95 ℃", 304, 126, 80, 20, 9f, Theme.Text, FontStyle.Bold);
 
+            _applyTimer = new System.Windows.Forms.Timer();
+            _applyTimer.Interval = 500;
+            _applyTimer.Tick += delegate
+            {
+                _applyTimer.Stop();
+                if (_editing == _app.Source) { _app.ApplyNow("slider"); RefreshStatus(); }
+            };
+
             _chkPs = Chk(p2, "省电模式", 16, 158, 120, OnModeFlagChanged);
             _chkMp = Chk(p2, "性能模式", 150, 158, 120, OnModeFlagChanged);
 
@@ -1002,6 +1238,14 @@ namespace RyzenTuner
             _lightPage.Height = S(440);
             _pageLight.Controls.Add(_lightPage);
             _lightPage.Show();
+            InitAvTimer();
+            int b = Display.GetBrightness();
+            if (b >= 0) { _trkBright.Value = Math.Max(0, Math.Min(100, b)); }
+            _lblBright.Text = (_trkBright.Value) + "%";
+            int vv = Display.GetVolume();
+            if (vv >= 0) { _trkVoice.Value = Math.Max(0, Math.Min(100, vv)); }
+            _lblVoice.Text = (_trkVoice.Value) + "%";
+
             SetTab(0);
         }
 
@@ -1024,10 +1268,18 @@ namespace RyzenTuner
 
         private void ShowTheme()
         {
+            _dialogOpen = true;
+            try { ShowThemeCore(); } finally { _dialogOpen = false; }
+        }
+
+        private void ShowThemeCore()
+        {
             using (ThemeForm tf = new ThemeForm())
             {
                 if (tf.ShowDialog(this) != DialogResult.OK) return;
                 _app.Cfg.ThemeName = tf.SelectedName;
+                _app.Cfg.AnimMode = tf.AnimMode;
+                TrayApp.CfgAnim = tf.AnimMode;
                 if (tf.SelectedName == "custom")
                 {
                     _app.Cfg.ThemeBg = Theme.ColorToInt(tf.PickBg);
@@ -1044,10 +1296,9 @@ namespace RyzenTuner
 
         private void ShowLighting()
         {
-            using (LightingForm lf = new LightingForm(_app))
-            {
-                lf.ShowDialog(this);
-            }
+            _dialogOpen = true;
+            try { using (LightingForm lf = new LightingForm(_app)) { lf.ShowDialog(this); } }
+            finally { _dialogOpen = false; }
         }
 
         private void ChooseDllDir()
@@ -1085,14 +1336,10 @@ namespace RyzenTuner
             _chkStartup.Checked = Autostart.IsEnabled();
             _chkTray.Checked = c.CloseToTray;
 
-            if (c.TurboKind == "pad" && c.TurboPadMask != 0)
-                _lblBinding.Text = "手柄 " + Pad.Name((ushort)c.TurboPadMask);
-            else if (c.TurboKind == "key" && c.TurboVk != 0)
-                _lblBinding.Text = string.IsNullOrEmpty(c.TurboName) ? (KeyHook.ModsName(c.TurboMods) + "VK 0x" + c.TurboVk.ToString("X2")) : c.TurboName;
-            else if (c.TurboKind == "key" && c.TurboScan != 0)
-                _lblBinding.Text = "扫描码 0x" + c.TurboScan.ToString("X2");
-            else
-                _lblBinding.Text = "未设置";
+            _lblBinding.Text = string.IsNullOrEmpty(c.TurboName) ? "Ctrl+Win+LMenu" : c.TurboName;
+
+            if (_lblCustom != null)
+                _lblCustom.Text = string.IsNullOrEmpty(c.CustomName) ? "未设置" : c.CustomName;
 
             LoadProfileToUi(_editing);
             _syncing = false;
@@ -1224,6 +1471,31 @@ namespace RyzenTuner
             _app.Cfg.SetProfile(_editing, _trkFast.Value, _trkSlow.Value, _trkTemp.Value, _chkPs.Checked, _chkMp.Checked);
             _app.Save();
             _app.NotifyUiChanged();
+            // 编辑的是当前供电的档位时，500ms 后自动下发
+            if (_applyTimer != null && _editing == _app.Source)
+            {
+                _applyTimer.Stop();
+                _applyTimer.Start();
+            }
+        }
+
+        private void InitAvTimer()
+        {
+            // 亮度与音量都实时下发，不再防抖
+        }
+
+        private void OnBrightnessChanged(object s, EventArgs e)
+        {
+            if (_syncing) return;
+            _lblBright.Text = _trkBright.Value + "%";
+            Display.SetBrightness(_trkBright.Value);
+        }
+
+        private void OnVolumeChanged(object s, EventArgs e)
+        {
+            if (_syncing) return;
+            _lblVoice.Text = _trkVoice.Value + "%";
+            Display.SetVolume(_trkVoice.Value);
         }
 
         private void OnStartupChanged(object s, EventArgs e)
@@ -1249,7 +1521,7 @@ namespace RyzenTuner
             _lblSource.Text = TrayApp.SourceText(src);
             if (_lblBadge != null)
             {
-                _lblBadge.Text = (_app.Cfg.SourceOverride == "auto") ? "EC 自动识别" : "手动指定";
+                _lblBadge.Text = (_app.Cfg.SourceOverride == "auto") ? "自动识别" : "手动指定";
                 _lblBadge.ForeColor = (_app.Cfg.SourceOverride == "auto") ? Theme.Green : Theme.Yellow;
             }
             int pct = Engine.BatteryPercent;
@@ -1259,7 +1531,7 @@ namespace RyzenTuner
             _app.GetTarget(out f, out sl, out t, out ps, out mp);
 
             string limits;
-            if ((DateTime.Now - _lastLimitsRead).TotalSeconds < 3 && _cachedLimits != null)
+            if ((DateTime.Now - _lastLimitsRead).TotalSeconds < 1 && _cachedLimits != null)
             {
                 limits = _cachedLimits;
             }
@@ -1272,7 +1544,10 @@ namespace RyzenTuner
             _lblLimits.Text = "限制 " + (limits.Length > 0 ? limits : "—") + "  ·  目标 " + f + "/" + sl + "W";
             _lblEngine.Text = _app.Eng.Ready ? "引擎 已连接" : ("引擎 未就绪：" + _app.Eng.Error);
             _lblEngine.ForeColor = _app.Eng.Ready ? Theme.Green : Theme.Red;
+            if (_app.Status != _lastStatus) { _lastStatus = _app.Status; _lastLimitsRead = DateTime.MinValue; _cachedLimits = null; }
             _lblAction.Text = _app.Status;
+            if (_btnPerf != null)
+                _btnPerf.Text = _app.Cfg.PerfActive ? "↩  恢复原功耗设置" : "⚡  一键性能模式";
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1287,10 +1562,17 @@ namespace RyzenTuner
         }
 
         // ---------------------------------------------------------- 学习
-        public void BeginLearn()
+        public void BeginLearn(bool custom = false)
+        {
+            _dialogOpen = true;
+            try { BeginLearnCore(custom); } finally { _dialogOpen = false; }
+        }
+
+        private void BeginLearnCore(bool custom)
         {
             using (LearnForm lf = new LearnForm(_app))
             {
+                lf.ForCustom = custom;
                 if (lf.ShowDialog(this) == DialogResult.OK)
                 {
                     SyncFromSettings();
@@ -1308,9 +1590,14 @@ namespace RyzenTuner
         public Color PickAccent = Theme.Accent;
         public Color PickText = Theme.Text;
         public Color PickDim = Theme.Dim;
+        public string AnimMode = "elegant";
 
         private Button[] _presets = new Button[3];
         private Button[] _swatches = new Button[5];
+        private readonly float _sc;
+
+        private int S(int v) { return (int)Math.Round(v * _sc); }
+        private Rectangle R(int x, int y, int w, int h) { return new Rectangle(S(x), S(y), S(w), S(h)); }
 
         public ThemeForm()
         {
@@ -1320,7 +1607,9 @@ namespace RyzenTuner
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(520, 470);
+            using (Graphics gg = Graphics.FromHwnd(IntPtr.Zero)) _sc = gg.DpiX / 96f;
+            ClientSize = new Size(S(520), S(470));
+            AutoScaleMode = AutoScaleMode.None;
             BackColor = Theme.Bg;
             ForeColor = Theme.Text;
             Font = new Font("Microsoft YaHei UI", 9f);
@@ -1333,7 +1622,7 @@ namespace RyzenTuner
                 int idx = i;
                 Button b = new Button();
                 b.Text = names[i];
-                b.Bounds = new Rectangle(18 + i * 160, 44, 152, 40);
+                b.Bounds = R(18 + i * 160, 44, 152, 40);
                 b.FlatStyle = FlatStyle.Flat;
                 b.BackColor = Theme.Card;
                 b.ForeColor = Theme.Text;
@@ -1358,9 +1647,9 @@ namespace RyzenTuner
                 int idx = i;
                 Label lb = MkLabel(labels[i], 18, 112 + i * 32);
                 lb.AutoSize = false;
-                lb.Bounds = new Rectangle(18, 138 + i * 40, 80, 24);
+                lb.Bounds = R(18, 138 + i * 40, 80, 24);
                 Button sw = new Button();
-                sw.Bounds = new Rectangle(110, 134 + i * 40, 170, 30);
+                sw.Bounds = R(110, 134 + i * 40, 170, 30);
                 sw.FlatStyle = FlatStyle.Flat;
                 sw.FlatAppearance.BorderColor = Theme.Border;
                 sw.Click += delegate { PickColor(idx); };
@@ -1368,9 +1657,46 @@ namespace RyzenTuner
                 _swatches[i] = sw;
             }
 
+            Label lAnim = new Label();
+            lAnim.Text = "弹出方式";
+            lAnim.ForeColor = Theme.Dim;
+            lAnim.Font = new Font("Microsoft YaHei UI", 8.5f);
+            lAnim.Bounds = R(18, 358, 90, 22);
+            Controls.Add(lAnim);
+
+            Button bClassic = new Button();
+            bClassic.Text = "传统";
+            bClassic.Bounds = R(110, 354, 90, 30);
+            bClassic.FlatStyle = FlatStyle.Flat;
+            bClassic.BackColor = Theme.Btn;
+            bClassic.ForeColor = Theme.Text;
+            bClassic.FlatAppearance.BorderColor = Theme.Border;
+            Controls.Add(bClassic);
+
+            Button bElegant = new Button();
+            bElegant.Text = "优雅";
+            bElegant.Bounds = R(210, 354, 90, 30);
+            bElegant.FlatStyle = FlatStyle.Flat;
+            bElegant.BackColor = Theme.Btn;
+            bElegant.ForeColor = Theme.Text;
+            bElegant.FlatAppearance.BorderColor = Theme.Border;
+            Controls.Add(bElegant);
+
+            AnimMode = TrayApp.CfgAnim;
+            Action refreshAnim = delegate
+            {
+                bClassic.BackColor = AnimMode == "classic" ? Theme.Accent : Theme.Btn;
+                bClassic.ForeColor = AnimMode == "classic" ? Color.White : Theme.Text;
+                bElegant.BackColor = AnimMode == "elegant" ? Theme.Accent : Theme.Btn;
+                bElegant.ForeColor = AnimMode == "elegant" ? Color.White : Theme.Text;
+            };
+            bClassic.Click += delegate { AnimMode = "classic"; refreshAnim(); };
+            bElegant.Click += delegate { AnimMode = "elegant"; refreshAnim(); };
+            refreshAnim();
+
             Button ok = new Button();
             ok.Text = "应用";
-            ok.Bounds = new Rectangle(306, 414, 95, 34);
+            ok.Bounds = R(306, 414, 95, 34);
             ok.FlatStyle = FlatStyle.Flat;
             ok.BackColor = Theme.Accent;
             ok.ForeColor = Color.White;
@@ -1380,7 +1706,7 @@ namespace RyzenTuner
 
             Button cancel = new Button();
             cancel.Text = "取消";
-            cancel.Bounds = new Rectangle(410, 414, 95, 34);
+            cancel.Bounds = R(410, 414, 95, 34);
             cancel.FlatStyle = FlatStyle.Flat;
             cancel.BackColor = Theme.Btn;
             cancel.ForeColor = Theme.Text;
@@ -1396,7 +1722,7 @@ namespace RyzenTuner
         {
             Label l = new Label();
             l.Text = text;
-            l.Bounds = new Rectangle(x, y, 200, 20);
+            l.Bounds = R(x, y, 200, 20);
             l.ForeColor = Theme.Dim;
             l.Font = new Font("Microsoft YaHei UI", 8.5f);
             Controls.Add(l);
@@ -1615,10 +1941,25 @@ namespace RyzenTuner
             _ok.Enabled = true;
         }
 
+        public bool ForCustom;
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (DialogResult == DialogResult.OK)
             {
+                if (ForCustom)
+                {
+                    if (_vk != 0)
+                    {
+                        _app.Cfg.CustomVk = _vk;
+                        _app.Cfg.CustomScan = _scan;
+                        _app.Cfg.CustomMods = _mods;
+                        _app.Cfg.CustomName = KeyHook.ModsName(_mods) + _name;
+                    }
+                    _app.Save();
+                    base.OnFormClosing(e);
+                    return;
+                }
                 if (_kind == "pad" && _padMask != 0)
                 {
                     _app.Cfg.TurboKind = "pad";
@@ -1886,6 +2227,29 @@ namespace RyzenTuner
 
             string selftest = GetArg(args, "--selftest");
             if (selftest != null) { RunSelfTest(selftest); return; }
+
+            if (Array.IndexOf(args, "--pipealert") >= 0) { VendorPipe.RunStandalone(); return; }
+
+            string shotTheme = GetArg(args, "--shot-theme");
+            if (shotTheme != null)
+            {
+                Application.EnableVisualStyles();
+                try { Native.SetProcessDPIAware(); } catch { }
+                using (ThemeForm tf = new ThemeForm())
+                {
+                    tf.Show();
+                    Application.DoEvents();
+                    System.Threading.Thread.Sleep(300);
+                    Application.DoEvents();
+                    using (Bitmap bmp = new Bitmap(tf.Width, tf.Height))
+                    {
+                        tf.DrawToBitmap(bmp, new Rectangle(0, 0, tf.Width, tf.Height));
+                        bmp.Save(shotTheme, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    tf.Close();
+                }
+                return;
+            }
 
             string keylog = GetArg(args, "--keylog");
             if (keylog != null) { RunKeyLog(keylog); return; }
