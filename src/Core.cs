@@ -167,6 +167,7 @@ namespace RyzenTuner
         public bool PerfMp { get; set; }
         public string PerfScheme { get; set; }
         public string AnimMode { get; set; }   // classic | elegant
+        public string VendorDir { get; set; }  // 自定义硬件层目录（CompatLayerCT 所在）
 
         public bool RgbEnabled { get; set; }
         public string RgbMode { get; set; }
@@ -334,6 +335,7 @@ namespace RyzenTuner
                 case "PerfMp": s.PerfMp = bv; break;
                 case "PerfScheme": s.PerfScheme = v; break;
                 case "AnimMode": s.AnimMode = v; break;
+                case "VendorDir": s.VendorDir = v; break;
                 case "RgbEnabled": s.RgbEnabled = bv; break;
                 case "RgbMode": s.RgbMode = v; break;
                 case "RgbR": s.RgbR = iv; break;
@@ -401,6 +403,7 @@ namespace RyzenTuner
             sb.AppendLine("PerfMp=" + s.PerfMp);
             sb.AppendLine("PerfScheme=" + s.PerfScheme);
             sb.AppendLine("AnimMode=" + (string.IsNullOrEmpty(s.AnimMode) ? "elegant" : s.AnimMode));
+            sb.AppendLine("VendorDir=" + s.VendorDir);
             sb.AppendLine("RgbEnabled=" + s.RgbEnabled);
             sb.AppendLine("RgbMode=" + s.RgbMode);
             sb.AppendLine("RgbR=" + s.RgbR);
