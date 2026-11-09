@@ -153,6 +153,20 @@ namespace RyzenTuner
         public int TurboUsage { get; set; }
         public int TurboPadMask { get; set; }
         public string TurboName { get; set; }
+        public int CustomVk { get; set; }
+        public int CustomScan { get; set; }
+        public int CustomMods { get; set; }
+        public string CustomName { get; set; }
+        public bool PerfActive { get; set; }
+        public string PerfMode { get; set; }
+        public string PerfSrc { get; set; }
+        public int PerfFast { get; set; }
+        public int PerfSlow { get; set; }
+        public int PerfTctl { get; set; }
+        public bool PerfPs { get; set; }
+        public bool PerfMp { get; set; }
+        public string PerfScheme { get; set; }
+        public string AnimMode { get; set; }   // classic | elegant
 
         public bool RgbEnabled { get; set; }
         public string RgbMode { get; set; }
@@ -187,10 +201,12 @@ namespace RyzenTuner
             DcinFast = 85; DcinSlow = 65; DcinTctl = 95; DcinPs = false; DcinMp = true;
 
             TurboKind = "key";
-            TurboVk = 123;       // VK_F12
-            TurboScan = 88;      // F12 扫描码
-            TurboMods = 0;
-            TurboName = "F12";
+            TurboVk = 164;       // VK_LMENU
+            TurboScan = 56;      // Alt 扫描码
+            TurboMods = 9;       // Ctrl + Win
+            TurboName = "Ctrl+Win+LMenu";
+            CustomName = "";
+            AnimMode = "elegant";
             TurboPage = 0; TurboUsage = 0; TurboPadMask = 0;
             RgbEnabled = false;
             RgbMode = "static";
@@ -253,10 +269,10 @@ namespace RyzenTuner
             if (string.IsNullOrEmpty(s.TurboKind)) s.TurboKind = "key";
             if (s.TurboKind == "key" && s.TurboVk == 0 && s.TurboScan == 0)
             {
-                s.TurboVk = 123;     // VK_F12
-                s.TurboScan = 88;    // F12 扫描码
-                s.TurboMods = 0;
-                s.TurboName = "F12";
+                s.TurboVk = 164;
+                s.TurboScan = 56;
+                s.TurboMods = 9;
+                s.TurboName = "Ctrl+Win+LMenu";
             }
         }
 
@@ -304,6 +320,20 @@ namespace RyzenTuner
                 case "TurboUsage": s.TurboUsage = iv; break;
                 case "TurboPadMask": s.TurboPadMask = iv; break;
                 case "TurboName": s.TurboName = v; break;
+                case "CustomVk": s.CustomVk = iv; break;
+                case "CustomScan": s.CustomScan = iv; break;
+                case "CustomMods": s.CustomMods = iv; break;
+                case "CustomName": s.CustomName = v; break;
+                case "PerfActive": s.PerfActive = bv; break;
+                case "PerfMode": s.PerfMode = v; break;
+                case "PerfSrc": s.PerfSrc = v; break;
+                case "PerfFast": s.PerfFast = iv; break;
+                case "PerfSlow": s.PerfSlow = iv; break;
+                case "PerfTctl": s.PerfTctl = iv; break;
+                case "PerfPs": s.PerfPs = bv; break;
+                case "PerfMp": s.PerfMp = bv; break;
+                case "PerfScheme": s.PerfScheme = v; break;
+                case "AnimMode": s.AnimMode = v; break;
                 case "RgbEnabled": s.RgbEnabled = bv; break;
                 case "RgbMode": s.RgbMode = v; break;
                 case "RgbR": s.RgbR = iv; break;
@@ -357,6 +387,20 @@ namespace RyzenTuner
             sb.AppendLine("TurboUsage=" + s.TurboUsage);
             sb.AppendLine("TurboPadMask=" + s.TurboPadMask);
             sb.AppendLine("TurboName=" + s.TurboName);
+            sb.AppendLine("CustomVk=" + s.CustomVk);
+            sb.AppendLine("CustomScan=" + s.CustomScan);
+            sb.AppendLine("CustomMods=" + s.CustomMods);
+            sb.AppendLine("CustomName=" + s.CustomName);
+            sb.AppendLine("PerfActive=" + s.PerfActive);
+            sb.AppendLine("PerfMode=" + s.PerfMode);
+            sb.AppendLine("PerfSrc=" + s.PerfSrc);
+            sb.AppendLine("PerfFast=" + s.PerfFast);
+            sb.AppendLine("PerfSlow=" + s.PerfSlow);
+            sb.AppendLine("PerfTctl=" + s.PerfTctl);
+            sb.AppendLine("PerfPs=" + s.PerfPs);
+            sb.AppendLine("PerfMp=" + s.PerfMp);
+            sb.AppendLine("PerfScheme=" + s.PerfScheme);
+            sb.AppendLine("AnimMode=" + (string.IsNullOrEmpty(s.AnimMode) ? "elegant" : s.AnimMode));
             sb.AppendLine("RgbEnabled=" + s.RgbEnabled);
             sb.AppendLine("RgbMode=" + s.RgbMode);
             sb.AppendLine("RgbR=" + s.RgbR);
@@ -622,14 +666,16 @@ namespace RyzenTuner
         /// <summary>返回 battery / typec / dcin；无法判断时返回 null。</summary>
         public static string Detect()
         {
-            if ((DateTime.Now - _cacheTime).TotalSeconds < 2) return _cached;
+            // 有 OneXConsole/CompatLayerCT 在跑时它们也访问 EC，我们把频率降到 5 秒，尽量不打断它的按键轮询
+            bool shared = System.Diagnostics.Process.GetProcessesByName("OneXConsole").Length > 0
+                       || System.Diagnostics.Process.GetProcessesByName("CompatLayerCT").Length > 0;
+            double ttl = shared ? 5.0 : 2.0;
+            if ((DateTime.Now - _cacheTime).TotalSeconds < ttl) return _cached;
             _cacheTime = DateTime.Now;
             _cached = null;
             try
             {
                 if (!EnsureDriver()) return null;
-                // OneXConsole 在运行时它独占 EC，我们不再抢读
-                if (System.Diagnostics.Process.GetProcessesByName("OneXConsole").Length > 0) return null;
                 int v = ReadRegister(0xFE);
                 if (v < 0) return null;
                 if (v == 1) _cached = "battery";
@@ -648,6 +694,133 @@ namespace RyzenTuner
         }
     }
 
+    // ------------------------------------------------------------------ Core Audio 音量
+    internal static class Audio
+    {
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+        private class MMDeviceEnumeratorComObject { }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        public interface IMMDeviceEnumerator
+        {
+            int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+            int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        public interface IMMDevice
+        {
+            int Activate(ref Guid iid, int clsCtx, IntPtr activationParams,
+                [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.IUnknown)] out object iface);
+        }
+
+        [System.Runtime.InteropServices.ComImport]
+        [System.Runtime.InteropServices.Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+        [System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+        public interface IAudioEndpointVolume
+        {
+            int RegisterControlChangeNotify(IntPtr n);
+            int UnregisterControlChangeNotify(IntPtr n);
+            int GetChannelCount(out int count);
+            int SetMasterVolumeLevel(float level, Guid ctx);
+            int SetMasterVolumeLevelScalar(float level, Guid ctx);
+            int GetMasterVolumeLevel(out float level);
+            int GetMasterVolumeLevelScalar(out float level);
+        }
+
+        private static IAudioEndpointVolume _vol;
+
+        public static IAudioEndpointVolume Default()
+        {
+            if (_vol != null) return _vol;
+            try
+            {
+                IMMDeviceEnumerator en = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                IMMDevice dev;
+                if (en.GetDefaultAudioEndpoint(0, 1, out dev) != 0) return null;
+                Guid iid = typeof(IAudioEndpointVolume).GUID;
+                object o;
+                if (dev.Activate(ref iid, 1, IntPtr.Zero, out o) != 0) return null;
+                _vol = (IAudioEndpointVolume)o;
+                return _vol;
+            }
+            catch { return null; }
+        }
+    }
+    // ------------------------------------------------------------------ 亮度 / 音量
+    internal static class Display
+    {
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern int waveOutSetVolume(IntPtr h, uint v);
+        [System.Runtime.InteropServices.DllImport("winmm.dll")]
+        private static extern int waveOutGetVolume(IntPtr h, out uint v);
+
+        public static int GetBrightness()
+        {
+            try
+            {
+                using (System.Management.ManagementClass mc = new System.Management.ManagementClass("root\\wmi", "WmiMonitorBrightness", null))
+                using (System.Management.ManagementObjectCollection col = mc.GetInstances())
+                {
+                    foreach (System.Management.ManagementObject o in col)
+                    {
+                        object v = o["CurrentBrightness"];
+                        if (v != null) return Convert.ToInt32(v);
+                    }
+                }
+            }
+            catch { }
+            return -1;
+        }
+
+        public static bool SetBrightness(int percent)
+        {
+            try
+            {
+                percent = Math.Max(0, Math.Min(100, percent));
+                using (System.Management.ManagementClass mc = new System.Management.ManagementClass("root\\wmi", "WmiMonitorBrightnessMethods", null))
+                using (System.Management.ManagementObjectCollection col = mc.GetInstances())
+                {
+                    foreach (System.Management.ManagementObject o in col)
+                    {
+                        o.InvokeMethod("WmiSetBrightness", new object[] { 1, (byte)percent });
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static int GetVolume()
+        {
+            try
+            {
+                Audio.IAudioEndpointVolume vol = Audio.Default();
+                if (vol == null) return -1;
+                float f;
+                if (vol.GetMasterVolumeLevelScalar(out f) != 0) return -1;
+                return (int)Math.Round(f * 100f);
+            }
+            catch { return -1; }
+        }
+
+        public static void SetVolume(int percent)
+        {
+            try
+            {
+                Audio.IAudioEndpointVolume vol = Audio.Default();
+                if (vol == null) return;
+                vol.SetMasterVolumeLevelScalar(Math.Max(0, Math.Min(100, percent)) / 100f, Guid.Empty);
+            }
+            catch { }
+        }
+    }
     // ------------------------------------------------------------------ 全局按键
     internal sealed class KeyHook : IDisposable
     {
