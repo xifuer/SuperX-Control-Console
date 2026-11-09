@@ -81,13 +81,28 @@ namespace RyzenTuner
 
         private static string LocateLayerDir()
         {
-            string[] candidates = new string[]
+            // 查找顺序：设置里指定 → 程序自带 vendor → OneXConsole 安装目录
+            System.Collections.Generic.List<string> list = new System.Collections.Generic.List<string>();
+            try
             {
-                @"C:\Program Files\OneXConsole\resources\resources",
-                @"C:\Program Files (x86)\OneXConsole\resources\resources"
-            };
+                Settings cfg = Store.Load();
+                if (cfg != null && !string.IsNullOrEmpty(cfg.VendorDir)) list.Add(cfg.VendorDir);
+            }
+            catch { }
+            list.Add(System.IO.Path.Combine(Store.Dir, "vendor"));
+            list.Add(@"C:\Program Files\OneXConsole\resources\resources");
+            list.Add(@"C:\Program Files (x86)\OneXConsole\resources\resources");
+            string[] candidates = list.ToArray();
             foreach (string d in candidates)
-                if (File.Exists(Path.Combine(d, "CompatLayerCT.exe"))) return d;
+            {
+                if (string.IsNullOrEmpty(d)) continue;
+                if (File.Exists(Path.Combine(d, "CompatLayerCT.exe")))
+                {
+                    TrayApp.Log("硬件层: " + d);
+                    return d;
+                }
+            }
+            TrayApp.Log("硬件层: 未找到（TURBO 需要 CompatLayerCT，见 docs/VENDOR.md）");
             return null;
         }
 
