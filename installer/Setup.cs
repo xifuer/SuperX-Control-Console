@@ -13,7 +13,7 @@ namespace RyzenTunerSetup
     {
         public const string AppName = "功耗控制台";
         public const string AppExe = "RyzenTuner.exe";
-        public const string Version = "1.0.11";
+        public const string Version = "1.0.12";
         public const string RegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RyzenTuner";
 
         [STAThread]
@@ -64,7 +64,16 @@ namespace RyzenTunerSetup
             {
                 string target = string.IsNullOrEmpty(dir) ? DefaultDir() : dir;
                 try { Install(target, !noTask, !noRun); }
-                catch (Exception ex) { Console.Error.WriteLine(ex.Message); Environment.Exit(1); }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        string log = Path.Combine(Path.GetTempPath(), "ryzentuner_setup_error.log");
+                        File.AppendAllText(log, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  dir=" + target + Environment.NewLine + ex.ToString() + Environment.NewLine);
+                    }
+                    catch { }
+                    Environment.Exit(1);
+                }
                 return;
             }
 
@@ -86,6 +95,20 @@ namespace RyzenTunerSetup
         {
             Directory.CreateDirectory(dir);
 
+            // stop running instances so files are not locked during upgrade
+            foreach (string name in new string[] { "RyzenTuner", "CompatLayerCT" })
+            {
+                try { foreach (Process pr in Process.GetProcessesByName(name)) { try { pr.Kill(); pr.WaitForExit(3000); } catch { } } } catch { }
+            }
+            System.Threading.Thread.Sleep(600);
+
+            // stop port I/O driver services to release WinRing0x64.sys
+            foreach (string svc in new string[] { "WinRing0_1_2_0", "inpoutx64" })
+            {
+                try { RunHidden("sc.exe", "stop " + svc); } catch { }
+            }
+            System.Threading.Thread.Sleep(900);
+
             // 1) 解包
             using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload"))
             {
@@ -99,7 +122,12 @@ namespace RyzenTunerSetup
                         string dest = Path.Combine(dir, e.FullName);
                         if (e.FullName.EndsWith("/")) { Directory.CreateDirectory(dest); continue; }
                         Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                        e.ExtractToFile(dest, true);
+                        try { e.ExtractToFile(dest, true); }
+                        catch (IOException)
+                        {
+                            // file in use (driver .sys) - keep existing copy
+                            if (!File.Exists(dest)) throw;
+                        }
                     }
                 }
                 try { File.Delete(tmp); } catch { }
@@ -178,7 +206,7 @@ namespace RyzenTunerSetup
                 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
                 "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">" +
                 "<RegistrationInfo><Description>{0}</Description></RegistrationInfo>" +
-                "<Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT20S</Delay></LogonTrigger></Triggers>" +
+                "<Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT2S</Delay></LogonTrigger></Triggers>" +
                 "<Principals><Principal id=\"Author\"><GroupId>S-1-5-32-544</GroupId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>" +
                 "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" +
                 "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>" +
@@ -186,7 +214,7 @@ namespace RyzenTunerSetup
                 "<IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>" +
                 "<AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden>" +
                 "<RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>" +
-                "<Actions Context=\"Author\"><Exec><Command>{1}</Command><Arguments>--elevated</Arguments></Exec></Actions></Task>",
+                "<Actions Context=\"Author\"><Exec><Command>{1}</Command><Arguments>--elevated --tray</Arguments></Exec></Actions></Task>",
                 AppName, exe);
 
             string tmp = Path.Combine(Path.GetTempPath(), "ryzentuner_task.xml");
