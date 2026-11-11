@@ -25,7 +25,6 @@ namespace RyzenTuner
         private Thread _thread;
         private volatile bool _running;
         private bool _startedLayer;
-        private Process _layerProc;
         private bool _lastDown;
 
         private static void Drain(StreamReader r)
@@ -152,24 +151,7 @@ namespace RyzenTuner
                     // 统一经由资源管理器启动（隐藏窗口、无 stdio 重定向），这是唯一验证可用的事件推送方式
                     LaunchViaExplorer();
                     Thread.Sleep(6000);
-                    if (false)
-                    {
-                    ProcessStartInfo psi = new ProcessStartInfo(Path.Combine(_dir, "CompatLayerCT.exe"));
-                    psi.Arguments = Port + " OneXConsole 2";
-                    psi.WorkingDirectory = _dir;
-                    psi.UseShellExecute = false;
-                    psi.CreateNoWindow = true;
-                    psi.RedirectStandardOutput = true;
-                    psi.RedirectStandardError = true;
-                    Process proc = Process.Start(psi);
-                    _layerProc = proc;
-                    // 必须用独立线程持续排空输出，否则它写满缓冲区就会退出
-                    Drain(proc.StandardOutput);
-                    Drain(proc.StandardError);
-                    _startedLayer = true;
-                    Thread.Sleep(1500);
-                    }
-                }
+               }
 
                 if (!Connect()) { LastError = "管道连接失败"; return false; }
                 _running = true;
