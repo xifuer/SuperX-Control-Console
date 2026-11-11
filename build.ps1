@@ -23,9 +23,8 @@ $cscArgs = @(
     "/out:$root\RyzenTuner.exe"
 ) + $refs
 
-$ico = if (Test-Path "$root\assets\app.ico") { "$root\assets\app.ico" } else { "$root\app.ico" }
-if (-not $NoIcon -and (Test-Path $ico)) {
-    $cscArgs += "/win32icon:$ico"
+if (-not $NoIcon -and (Test-Path "$root\app.ico")) {
+    $cscArgs += "/win32icon:$root\app.ico"
 }
 
 $cscArgs += @(
