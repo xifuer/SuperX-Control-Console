@@ -201,6 +201,7 @@ namespace RyzenTuner
         {
             Cfg = Store.Load();
             CfgAnim = string.IsNullOrEmpty(Cfg.AnimMode) ? "elegant" : Cfg.AnimMode;
+            Theme.LoadFrom(Cfg);   // apply saved theme at startup
             Eng = new Engine();
             Eng.Init(EngineDir());
 
