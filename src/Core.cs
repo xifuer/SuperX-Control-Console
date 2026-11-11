@@ -168,6 +168,25 @@ namespace RyzenTuner
         public string PerfScheme { get; set; }
         public string AnimMode { get; set; }   // classic | elegant
         public string VendorDir { get; set; }  // 自定义硬件层目录（CompatLayerCT 所在）
+        public string CpuMode { get; set; }    // eco | office | perf | custom
+        public int CpuThreads { get; set; }    // 0 = 全部
+        public string CpuTarget { get; set; }  // 进程名，空 = 本程序
+        public bool CpuCustom { get; set; }    // 自定义线程优先于三个模式
+        public string PowerMode { get; set; }  // eco | office | perf | ""
+        public bool SmartClose { get; set; }   // 点窗口外自动关闭
+        public bool AlwaysOnTop { get; set; }  // 窗口置顶
+        public bool CustomSupply { get; set; } // 自定义供电优先
+        public int SupplyFast { get; set; }
+        public int SupplySlow { get; set; }
+        public int SupplyTctl { get; set; }
+        public bool GameAutoPerf { get; set; }
+        public int CardOpacity { get; set; }
+        public string BgImage { get; set; }
+        public string CpuApps { get; set; }    // 多应用列表，换行分隔；空=全部进程
+        public bool CamAuto { get; set; }      // 摄像头自动亮度
+        public int CamInterval { get; set; }   // 采样间隔（秒）
+        public int CalMinLuma { get; set; }    // 校准：最暗时的画面亮度
+        public int CalMaxLuma { get; set; }    // 校准：最亮时的画面亮度
 
         public bool RgbEnabled { get; set; }
         public string RgbMode { get; set; }
@@ -208,6 +227,16 @@ namespace RyzenTuner
             TurboName = "Ctrl+Win+LMenu";
             CustomName = "";
             AnimMode = "elegant";
+            CamInterval = 5;
+            CalMinLuma = 8;
+            CalMaxLuma = 210;
+            CardOpacity = 100;
+            CpuMode = "perf";
+            CpuThreads = 0;
+            PowerMode = "";
+            SupplyFast = 60; SupplySlow = 45; SupplyTctl = 90;
+            SmartClose = true;
+            AlwaysOnTop = true;
             TurboPage = 0; TurboUsage = 0; TurboPadMask = 0;
             RgbEnabled = false;
             RgbMode = "static";
@@ -261,7 +290,33 @@ namespace RyzenTuner
             }
             catch { }
             Migrate(s);
-            return s;
+            // 去重：同一键只保留最后一个值，写回文件
+            try
+            {
+                if (File.Exists(FilePath))
+                {
+                    System.Collections.Generic.Dictionary<string, string> map = new System.Collections.Generic.Dictionary<string, string>();
+                    System.Collections.Generic.List<string> order = new System.Collections.Generic.List<string>();
+                    foreach (string raw in File.ReadAllLines(FilePath, Encoding.UTF8))
+                    {
+                        string line = raw.Trim();
+                        if (line.Length == 0 || line.StartsWith("#")) continue;
+                        int eq = line.IndexOf('=');
+                        if (eq <= 0) continue;
+                        string k = line.Substring(0, eq).Trim();
+                        if (!map.ContainsKey(k)) order.Add(k);
+                        map[k] = line.Substring(eq + 1).Trim();
+                    }
+                    if (order.Count > 0)
+                    {
+                        StringBuilder sb2 = new StringBuilder();
+                        sb2.AppendLine("# RyzenTuner 配置（可直接编辑，程序退出时写回）");
+                        foreach (string k in order) sb2.AppendLine(k + "=" + map[k]);
+                        File.WriteAllText(FilePath, sb2.ToString(), Encoding.UTF8);
+                    }
+                }
+            }
+            catch { }            return s;
         }
 
         private static void Migrate(Settings s)
@@ -336,6 +391,25 @@ namespace RyzenTuner
                 case "PerfScheme": s.PerfScheme = v; break;
                 case "AnimMode": s.AnimMode = v; break;
                 case "VendorDir": s.VendorDir = v; break;
+                case "CpuMode": s.CpuMode = v; break;
+                case "CpuThreads": s.CpuThreads = iv; break;
+                case "CpuTarget": s.CpuTarget = v; break;
+                case "CpuCustom": s.CpuCustom = bv; break;
+                case "PowerMode": s.PowerMode = v; break;
+                case "SmartClose": s.SmartClose = bv; break;
+                case "AlwaysOnTop": s.AlwaysOnTop = bv; break;
+                case "CustomSupply": s.CustomSupply = bv; break;
+                case "SupplyFast": s.SupplyFast = iv; break;
+                case "SupplySlow": s.SupplySlow = iv; break;
+                case "SupplyTctl": s.SupplyTctl = iv; break;
+                case "CpuApps": s.CpuApps = v; break;
+                case "GameAutoPerf": s.GameAutoPerf = bv; break;
+                case "BgImage": s.BgImage = v; break;
+                case "CardOpacity": s.CardOpacity = iv; break;
+                case "CamAuto": s.CamAuto = bv; break;
+                case "CamInterval": s.CamInterval = iv; break;
+                case "CalMinLuma": s.CalMinLuma = iv; break;
+                case "CalMaxLuma": s.CalMaxLuma = iv; break;
                 case "RgbEnabled": s.RgbEnabled = bv; break;
                 case "RgbMode": s.RgbMode = v; break;
                 case "RgbR": s.RgbR = iv; break;
@@ -404,6 +478,26 @@ namespace RyzenTuner
             sb.AppendLine("PerfScheme=" + s.PerfScheme);
             sb.AppendLine("AnimMode=" + (string.IsNullOrEmpty(s.AnimMode) ? "elegant" : s.AnimMode));
             sb.AppendLine("VendorDir=" + s.VendorDir);
+            sb.AppendLine("CpuMode=" + s.CpuMode);
+            sb.AppendLine("CpuThreads=" + s.CpuThreads);
+            sb.AppendLine("CpuTarget=" + s.CpuTarget);
+            sb.AppendLine("CpuCustom=" + s.CpuCustom);
+            sb.AppendLine("PowerMode=" + s.PowerMode);
+            sb.AppendLine("SmartClose=" + s.SmartClose);
+            sb.AppendLine("AlwaysOnTop=" + s.AlwaysOnTop);
+            sb.AppendLine("CustomSupply=" + s.CustomSupply);
+            sb.AppendLine("SupplyFast=" + s.SupplyFast);
+            sb.AppendLine("SupplySlow=" + s.SupplySlow);
+            sb.AppendLine("SupplyTctl=" + s.SupplyTctl);
+            sb.AppendLine("CpuApps=" + (s.CpuApps ?? "").Replace("\r", " ").Replace("\n", "|"));
+            sb.AppendLine("GameAutoPerf=" + s.GameAutoPerf);
+            sb.AppendLine("BgImage=" + (s.BgImage ?? ""));
+            sb.AppendLine("CardOpacity=" + s.CardOpacity);
+            sb.AppendLine("CardOpacity=" + s.CardOpacity);
+            sb.AppendLine("CamAuto=" + s.CamAuto);
+            sb.AppendLine("CamInterval=" + s.CamInterval);
+            sb.AppendLine("CalMinLuma=" + s.CalMinLuma);
+            sb.AppendLine("CalMaxLuma=" + s.CalMaxLuma);
             sb.AppendLine("RgbEnabled=" + s.RgbEnabled);
             sb.AppendLine("RgbMode=" + s.RgbMode);
             sb.AppendLine("RgbR=" + s.RgbR);
@@ -755,6 +849,248 @@ namespace RyzenTuner
             catch { return null; }
         }
     }
+    // ------------------------------------------------------------------ RAPL 功耗（AIDA64 同款方式）
+    internal static class Rapl
+    {
+        [System.Runtime.InteropServices.DllImport("WinRing0x64.dll", EntryPoint = "InitializeOls")]
+        private static extern bool InitializeOls();
+        [System.Runtime.InteropServices.DllImport("WinRing0x64.dll", EntryPoint = "DeinitializeOls")]
+        private static extern void DeinitializeOls();
+        [System.Runtime.InteropServices.DllImport("WinRing0x64.dll", EntryPoint = "Rdmsr")]
+        private static extern bool Rdmsr(uint index, out uint eax, out uint edx);
+        [System.Runtime.InteropServices.DllImport("WinRing0x64.dll", EntryPoint = "GetDllStatus")]
+        private static extern uint GetDllStatus();
+
+        private const uint MSR_RAPL_PWR_UNIT = 0xC0010299;
+        private const uint MSR_PKG_ENERGY_STAT = 0xC001029B;
+        private const uint MSR_CORE_ENERGY_STAT = 0xC001029A;
+
+        private static bool _ready;
+        private static bool _tried;
+        private static double _energyUnit = -1;
+        private static ulong _lastEnergy;
+        private static ulong _lastCore;
+        private static DateTime _lastTime = DateTime.MinValue;
+
+        public static bool Ready
+        {
+            get
+            {
+                if (_tried) return _ready;
+                _tried = true;
+                try
+                {
+                    if (!InitializeOls())
+                    {
+                        // 驱动未装时提示需要管理员或驱动文件
+                        _ready = false;
+                        return false;
+                    }
+                    uint e1, e2;
+                    if (Rdmsr(MSR_RAPL_PWR_UNIT, out e1, out e2))
+                    {
+                        int esu = (int)((e1 >> 8) & 0x1F);
+                        _energyUnit = 1.0 / (1 << esu);
+                        _ready = true;
+                    }
+                }
+                catch { _ready = false; }
+                return _ready;
+            }
+        }
+
+        // 返回整包瓦数；首次调用返回 -1（只建立基线）
+        public static double PackageWatts()
+        {
+            double pkg, core;
+            ReadBoth(out pkg, out core);
+            return pkg;
+        }
+
+        // GPU 估算：整包 − CPU 核心
+        public static double GpuWatts()
+        {
+            return _lastGpuW;
+        }
+        private static double _lastGpuW = -1;
+
+        public static void ReadBoth(out double pkgW, out double coreW)
+        {
+            pkgW = -1; coreW = -1;
+            if (!Ready) return;
+            uint p1, p2, c1, c2;
+            if (!Rdmsr(MSR_PKG_ENERGY_STAT, out p1, out p2)) return;
+            bool hasCore = Rdmsr(MSR_CORE_ENERGY_STAT, out c1, out c2);
+            ulong pkg = ((ulong)p2 << 32) | p1;
+            ulong core = hasCore ? (((ulong)c2 << 32) | c1) : 0;
+            DateTime now = DateTime.Now;
+            if (_lastTime != DateTime.MinValue)
+            {
+                double dt = (now - _lastTime).TotalSeconds;
+                if (dt > 0.05)
+                {
+                    ulong dp = (pkg >= _lastEnergy) ? (pkg - _lastEnergy) : (pkg + (1UL << 32) - _lastEnergy);
+                    pkgW = dp * _energyUnit / dt;
+                    if (pkgW < 0 || pkgW > 500) pkgW = -1;
+                    if (hasCore)
+                    {
+                        ulong dc = (core >= _lastCore) ? (core - _lastCore) : (core + (1UL << 32) - _lastCore);
+                        coreW = dc * _energyUnit / dt;
+                        if (coreW < 0 || coreW > 500) coreW = -1;
+                    }
+                    if (pkgW >= 0 && coreW >= 0)
+                    {
+                        double g = pkgW - coreW;
+                        if (g < 0) g = 0;
+                        _lastGpuW = g;
+                    }
+                }
+            }
+            _lastEnergy = pkg;
+            _lastCore = core;
+            _lastTime = now;
+        }
+    }
+    // ------------------------------------------------------------------ CPU 亲和性
+    internal static class Cpu
+    {
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetProcessAffinityMask(IntPtr h, IntPtr mask);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr h);
+
+        // 启用 SeDebugPrivilege，才能修改受保护进程的亲和性
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct LUID { public uint Low; public int High; }
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct TP { public uint Count; public LUID Luid; public uint Attr; }
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool OpenProcessToken(IntPtr h, uint acc, out IntPtr tok);
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool AdjustTokenPrivileges(IntPtr tok, bool dis, ref TP np, int len, IntPtr prev, IntPtr ret);
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern bool LookupPrivilegeValue(string sys, string name, out LUID luid);
+
+        private static bool _dbgPriv;
+
+        public static void EnableDebugPrivilege()
+        {
+            if (_dbgPriv) return;
+            _dbgPriv = true;
+            try
+            {
+                IntPtr tok;
+                if (!OpenProcessToken(System.Diagnostics.Process.GetCurrentProcess().Handle, 0x0020 | 0x0008, out tok)) return;
+                LUID luid;
+                if (LookupPrivilegeValue(null, "SeDebugPrivilege", out luid))
+                {
+                    TP tp = new TP();
+                    tp.Count = 1;
+                    tp.Luid = luid;
+                    tp.Attr = 0x0002;   // SE_PRIVILEGE_ENABLED
+                    AdjustTokenPrivileges(tok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+                }
+                CloseHandle(tok);
+            }
+            catch { }
+        }
+
+        private const uint PROCESS_SET_INFORMATION = 0x0200;
+        private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+
+        public static int Cores { get { return Environment.ProcessorCount; } }
+
+        public static ulong MaskFor(int threads)
+        {
+            int n = (threads <= 0 || threads > Cores) ? Cores : threads;
+            ulong m = 0;
+            for (int i = 0; i < n; i++) m |= 1UL << i;
+            return m;
+        }
+
+        public static int CountBits(ulong m)
+        {
+            int n = 0;
+            while (m != 0) { n += (int)(m & 1); m >>= 1; }
+            return n;
+        }
+
+        public static string Apply(int pid, ulong mask)
+        {
+            IntPtr h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, false, pid);
+            if (h == IntPtr.Zero) return "无法打开进程 " + pid + "（错误 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）";
+            try
+            {
+                if (!SetProcessAffinityMask(h, new IntPtr(unchecked((long)mask))))
+                    return "设置失败（错误 " + System.Runtime.InteropServices.Marshal.GetLastWin32Error() + "）";
+                return null;
+            }
+            finally { CloseHandle(h); }
+        }
+
+        public static int[] FindByName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return new int[0];
+            try
+            {
+                System.Diagnostics.Process[] ps = System.Diagnostics.Process.GetProcessesByName(name);
+                int[] ids = new int[ps.Length];
+                for (int i = 0; i < ps.Length; i++) { ids[i] = ps[i].Id; ps[i].Dispose(); }
+                return ids;
+            }
+            catch { return new int[0]; }
+        }
+    }
+    // ------------------------------------------------------------------ 电池功率
+    internal static class Battery
+    {
+        // 返回：正数=充电，负数=放电，单位 W；读不到返回 double.NaN
+        public static double PowerWatts()
+        {
+            try
+            {
+                using (System.Management.ManagementClass mc = new System.Management.ManagementClass("root\\wmi", "BatteryStatus", null))
+                using (System.Management.ManagementObjectCollection col = mc.GetInstances())
+                {
+                    foreach (System.Management.ManagementObject o in col)
+                    {
+                        object dis = o["DischargeRate"];
+                        object cha = o["ChargeRate"];
+                        object on = o["PowerOnline"];
+                        double w = double.NaN;
+                        if (dis != null && Convert.ToDouble(dis) > 0) w = -Convert.ToDouble(dis) / 1000.0;
+                        else if (cha != null && Convert.ToDouble(cha) > 0) w = Convert.ToDouble(cha) / 1000.0;
+                        if (!double.IsNaN(w)) return w;
+                        if (on != null) return 0;
+                    }
+                }
+            }
+            catch { }
+            return double.NaN;
+        }
+    }
+    // ------------------------------------------------------------------ 全屏检测
+    internal static class FullScreen
+    {
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        private static extern int SHQueryUserNotificationState(out int state);
+
+        // QUNS_BUSY=2  QUNS_RUNNING_D3D_FULL_SCREEN=3  QUNS_PRESENTATION_MODE=4
+        public static bool Busy(out int state)
+        {
+            state = 0;
+            try
+            {
+                if (SHQueryUserNotificationState(out state) != 0) return false;
+                return state == 2 || state == 3 || state == 4;   // 2=忙碌 3=D3D全屏 4=演示
+            }
+            catch { return false; }
+        }
+    }
+
     // ------------------------------------------------------------------ 亮度 / 音量
     internal static class Display
     {
