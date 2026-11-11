@@ -951,7 +951,7 @@ namespace RyzenTuner
                 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
                 "<Task version=\"1.3\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">" +
                 "<RegistrationInfo><Description>RyzenTuner 登录自启</Description></RegistrationInfo>" +
-                "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{0}</UserId><Delay>PT20S</Delay></LogonTrigger></Triggers>" +
+                "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{0}</UserId><Delay>PT2S</Delay></LogonTrigger></Triggers>" +
                 "<Principals><Principal id=\"Author\"><UserId>{0}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>" +
                 "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" +
                 "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" +
@@ -962,7 +962,7 @@ namespace RyzenTuner
                 "<AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled>" +
                 "<Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun>" +
                 "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority></Settings>" +
-                "<Actions Context=\"Author\"><Exec><Command>{1}</Command><Arguments>--tray</Arguments></Exec></Actions></Task>",
+                "<Actions Context=\"Author\"><Exec><Command>{1}</Command><Arguments>--elevated --tray</Arguments></Exec></Actions></Task>",
                 EscapeXml(user), EscapeXml(exePath));
 
             string tmp = Path.Combine(Path.GetTempPath(), "ryzentuner-task.xml");
