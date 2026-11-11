@@ -13,7 +13,7 @@ namespace RyzenTunerSetup
     {
         public const string AppName = "功耗控制台";
         public const string AppExe = "RyzenTuner.exe";
-        public const string Version = "1.0.12";
+        public const string Version = "1.5.0";
         public const string RegKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\RyzenTuner";
 
         [STAThread]
@@ -69,7 +69,7 @@ namespace RyzenTunerSetup
                     try
                     {
                         string log = Path.Combine(Path.GetTempPath(), "ryzentuner_setup_error.log");
-                        File.AppendAllText(log, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  dir=" + target + Environment.NewLine + ex.ToString() + Environment.NewLine);
+                        File.AppendAllText(log, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "  dir=" + target + Environment.NewLine + ex.ToString() + Environment.NewLine + Environment.NewLine);
                     }
                     catch { }
                     Environment.Exit(1);
@@ -95,14 +95,21 @@ namespace RyzenTunerSetup
         {
             Directory.CreateDirectory(dir);
 
-            // stop running instances so files are not locked during upgrade
+            // 0) 先结束正在运行的实例，避免升级时文件被占用
             foreach (string name in new string[] { "RyzenTuner", "CompatLayerCT" })
             {
-                try { foreach (Process pr in Process.GetProcessesByName(name)) { try { pr.Kill(); pr.WaitForExit(3000); } catch { } } } catch { }
+                try
+                {
+                    foreach (Process pr in Process.GetProcessesByName(name))
+                    {
+                        try { pr.Kill(); pr.WaitForExit(3000); } catch { }
+                    }
+                }
+                catch { }
             }
             System.Threading.Thread.Sleep(600);
 
-            // stop port I/O driver services to release WinRing0x64.sys
+            // 停止端口驱动服务，释放 WinRing0x64.sys / inpoutx64.dll 的占用
             foreach (string svc in new string[] { "WinRing0_1_2_0", "inpoutx64" })
             {
                 try { RunHidden("sc.exe", "stop " + svc); } catch { }
@@ -125,7 +132,7 @@ namespace RyzenTunerSetup
                         try { e.ExtractToFile(dest, true); }
                         catch (IOException)
                         {
-                            // file in use (driver .sys) - keep existing copy
+                            // 文件被占用（如驱动 .sys 正在使用）：已存在就跳过
                             if (!File.Exists(dest)) throw;
                         }
                     }
@@ -138,7 +145,8 @@ namespace RyzenTunerSetup
 
             // 2) 卸载程序
             string uninstall = Path.Combine(dir, "uninstall.exe");
-            try { File.Copy(SetupPath, uninstall, true); } catch { }
+            try { File.Copy(SetupPath, uninstall, true); }
+            catch (Exception ex) { throw new Exception("无法写入 uninstall.exe：" + ex.Message); }
 
             // 3) 快捷方式
             CreateShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk"), exe, dir);
@@ -206,8 +214,8 @@ namespace RyzenTunerSetup
                 "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
                 "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">" +
                 "<RegistrationInfo><Description>{0}</Description></RegistrationInfo>" +
-                "<Triggers><LogonTrigger><Enabled>true</Enabled><Delay>PT2S</Delay></LogonTrigger></Triggers>" +
-                "<Principals><Principal id=\"Author\"><GroupId>S-1-5-32-544</GroupId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>" +
+                "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{2}</UserId><Delay>PT2S</Delay></LogonTrigger></Triggers>" +
+                "<Principals><Principal id=\"Author\"><UserId>{2}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>" +
                 "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" +
                 "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>" +
                 "<StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>" +
@@ -215,7 +223,7 @@ namespace RyzenTunerSetup
                 "<AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden>" +
                 "<RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>" +
                 "<Actions Context=\"Author\"><Exec><Command>{1}</Command><Arguments>--elevated --tray</Arguments></Exec></Actions></Task>",
-                AppName, exe);
+                AppName, exe, Environment.UserDomainName + "\\" + Environment.UserName);
 
             string tmp = Path.Combine(Path.GetTempPath(), "ryzentuner_task.xml");
             File.WriteAllText(tmp, xml, System.Text.Encoding.Unicode);
@@ -266,6 +274,13 @@ namespace RyzenTunerSetup
                     try { p.Kill(); p.WaitForExit(4000); } catch { }
                 }
                 System.Threading.Thread.Sleep(600);
+
+            // 停止端口驱动服务，释放 WinRing0x64.sys / inpoutx64.dll 的占用
+            foreach (string svc in new string[] { "WinRing0_1_2_0", "inpoutx64" })
+            {
+                try { RunHidden("sc.exe", "stop " + svc); } catch { }
+            }
+            System.Threading.Thread.Sleep(900);
             }
             catch { }
 
