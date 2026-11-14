@@ -378,6 +378,16 @@ namespace RyzenTuner
             }
 
             RefreshSource();
+            if (Cfg.ParkMode == "manual")
+                Parking.ManualPct = Math.Max(1, Math.Min(100, Cfg.ParkMinPct));
+            if (!string.IsNullOrEmpty(Cfg.ParkMode))
+            {
+                string pdStart;
+                bool pokStart = Parking.Apply(Cfg.ParkMode, out pdStart);
+                Cfg.ParkApplied = pdStart;
+                Save();
+                Log("核心停放(启动): " + (pokStart ? pdStart : ("失败 " + (Parking.LastError ?? ""))));
+            }
             RefreshMenu();
             Log("启动: engine=" + (Eng.Ready ? "ready" : Eng.Error) + " mode=" + Cfg.Mode + " source=" + _source);
             UpdateTrayText();
@@ -1137,11 +1147,16 @@ namespace RyzenTuner
         private System.Windows.Forms.Timer _cpuApplyTimer;
         private ulong _lastGlobalMask;
         private DateTime _lastReapply = DateTime.MinValue;
-        private CheckBox _chkCustomSupply;
+        private CheckBox _chkCustomSupply, _chkSwap;
         private Button _btnSmart, _btnTop, _btnQuit, _btnGameAuto;
+        private Button _btnParkFull, _btnParkDefault, _btnParkAggr, _btnParkAuto;
+        private Label _lblPark;
+        private DateTime _lastParkEnforce = DateTime.MinValue;
+        private TrackBar _trkFreq;
+        private TrackBar _trkPark;
+        private Label _lblParkPct;
+        private Label _lblFreq;
         private Label _lblFooter;
-        private TextBox _txtCpuApps;
-        private Label _lblCpuInfo;
         private int _lastForegroundPid;
         private Button _tabPower, _tabProfile, _tabLight;
         private Panel _pagePower, _pageProfile, _pageLight, _cardHost;
@@ -1608,6 +1623,9 @@ namespace RyzenTuner
             _pageProfile.Bounds = _pagePower.Bounds;
             _pageProfile.BackColor = Theme.Bg;
             _pageProfile.AutoScroll = true;
+            _pageProfile.AutoScrollMinSize = new Size(0, 680);
+            _pagePower.AutoScroll = true;
+            _pagePower.AutoScrollMinSize = new Size(0, 850);
             _pageProfile.Anchor = _pagePower.Anchor;
             _pageProfile.Visible = false;
             Controls.Add(_pageProfile);
@@ -1625,9 +1643,9 @@ namespace RyzenTuner
             _tabLight = Btn(this, "灯效", 288, 58, 136, 30, delegate { SetTab(2); });
 
             // ==================== 功耗页 ====================
-            _btnEco = Btn(_pagePower, "省电模式\n4 线程", 16, 6, 130, 54, delegate { ApplyPowerMode("eco"); });
-            _btnOffice = Btn(_pagePower, "日常办公\n12 线程", 152, 6, 130, 54, delegate { ApplyPowerMode("office"); });
-            _btnPerf = Btn(_pagePower, "性能模式\n全核", 288, 6, 136, 54, delegate { ApplyPowerMode("perf"); });
+            _btnEco = Btn(_pagePower, "省电模式\n25 / 15W", 16, 6, 130, 54, delegate { ApplyPowerMode("eco"); });
+            _btnOffice = Btn(_pagePower, "日常办公\n55 / 45W", 152, 6, 130, 54, delegate { ApplyPowerMode("office"); });
+            _btnPerf = Btn(_pagePower, "性能模式\n120 / 120W", 288, 6, 136, 54, delegate { ApplyPowerMode("perf"); });
             foreach (Button mb in new Button[] { _btnEco, _btnOffice, _btnPerf })
             {
                 mb.Font = F(9f, FontStyle.Bold);
@@ -1694,13 +1712,15 @@ namespace RyzenTuner
             Panel host = _cardHost;
             _cardHost = _pageProfile;
 
-            Card p1 = AddCard(16, 8, 408, 104, "供电模式选择");
+            Card p1 = AddCard(16, 8, 388, 136, "供电模式选择");
             _btnBattery = Btn(p1, "电池", 16, 28, 118, 30, delegate { SelectProfile("battery"); });
             _btnTypec = Btn(p1, "USB-C", 140, 28, 118, 30, delegate { SelectProfile("typec"); });
             _btnDcin = Btn(p1, "DC-IN", 264, 28, 118, 30, delegate { SelectProfile("dcin"); });
             _chkCustomSupply = Chk(p1, "自定义供电（优先于三个功率模式）", 16, 66, 376, OnCustomSupplyChanged);
+            _chkSwap = Chk(p1, "Type-C / DC-IN 识别反了（点此对调）", 16, 94, 376, OnSwapSupplyChanged);
+            _chkSwap.Checked = _app.Cfg.SwapSupply;
 
-            Card p2 = AddCard(16, 120, 408, 252, "");
+            Card p2 = AddCard(16, 152, 388, 252, "");
             _lblProfileTitle = Lbl(p2, "DC-IN 档位", 16, 10, 300, 24, 11f, Theme.Text, FontStyle.Bold);
 
             Lbl(p2, "加速功耗", 16, 50, 80, 20, 8.5f, Theme.Dim, FontStyle.Regular);
@@ -1780,86 +1800,28 @@ namespace RyzenTuner
             _cardHost = _pageProfile;
 
             int n = Cpu.Cores;
-            Card c1 = AddCard(16, 380, 408, 212, "CPU 线程");
-            Lbl(c1, "取消勾选即不使用该线程，至少保留 1 个", 16, 30, 270, 20, 8f, Theme.Dim, FontStyle.Regular);
-            Button btnAll = Btn(c1, "全选", 300, 28, 92, 26, delegate
-            {
-                SetCpuChecks(Cpu.MaskFor(0));
-                SyncRowChecks();
-                UpdateCpuInfo();
-            });
-            btnAll.BackColor = Theme.Btn;
-            btnAll.ForeColor = Theme.Text;
-            btnAll.FlatAppearance.BorderColor = Theme.Border;
-            for (int i = 0; i < n && i < 32; i++)
-            {
-                int col = i % 8, row = i / 8;
-                CheckBox cb = new CheckBox();
-                cb.Text = (i + 1).ToString();
-                cb.ForeColor = Theme.Text;
-                cb.Font = F(8f, FontStyle.Regular);
-                cb.AutoSize = false;
-                cb.Bounds = new Rectangle(S(16 + col * 38), S(64 + row * 32), S(36), S(26));
-                cb.Checked = true;
-                cb.CheckedChanged += delegate
-                {
-                    if (!_rowSyncing && !AnyChecked()) cb.Checked = true;   // 至少保留一个
-                    UpdateCpuInfo(); SyncRowChecks(); ArmCpuApply();
-                };
-                c1.Controls.Add(cb);
-                _cpuChecks.Add(cb);
-            }
-            // 每排末尾的行全选
-            for (int row = 0; row < 4; row++)
-            {
-                int r = row;
-                CheckBox rowChk = new CheckBox();
-                rowChk.Text = "全选";
-                rowChk.ForeColor = Theme.Dim;
-                rowChk.Font = F(7.5f, FontStyle.Regular);
-                rowChk.AutoSize = false;
-                rowChk.Bounds = new Rectangle(S(330), S(64 + r * 32), S(62), S(24));
-                rowChk.CheckedChanged += delegate
-                {
-                    if (_rowSyncing) return;
-                    _rowSyncing = true;
-                    for (int i = r * 8; i < r * 8 + 8 && i < _cpuChecks.Count; i++)
-                        _cpuChecks[i].Checked = rowChk.Checked;
-                    _rowSyncing = false;
-                    if (!AnyChecked() && _cpuChecks.Count > 0)
-                    {
-                        _rowSyncing = true;
-                        _cpuChecks[r * 8].Checked = true;   // 至少保留一个
-                        _rowSyncing = false;
-                    }
-                    UpdateCpuInfo();
-                    SyncRowChecks();
-                    ArmCpuApply();
-                };
-                c1.Controls.Add(rowChk);
-                _rowChecks.Add(rowChk);
-            }
+            Card c1 = AddCard(16, 412, 388, 244, "核心停放与频率");
 
-            Card c2 = AddCard(16, 604, 408, 190, "应用列表");
-            Lbl(c2, "每行一个进程名，留空 = 全部进程", 16, 34, 376, 18, 8f, Theme.Dim, FontStyle.Regular);
-            _txtCpuApps = new TextBox();
-            _txtCpuApps.Multiline = true;
-            _txtCpuApps.ScrollBars = ScrollBars.Vertical;
-            _txtCpuApps.BorderStyle = BorderStyle.FixedSingle;
-            _txtCpuApps.Font = F(8.5f, FontStyle.Regular);
-            _txtCpuApps.BackColor = Theme.Card;
-            _txtCpuApps.ForeColor = Theme.Text;
-            _txtCpuApps.Bounds = new Rectangle(S(16), S(56), S(376), S(70));
-            _txtCpuApps.Text = _app.Cfg.CpuApps ?? "";
-            _txtCpuApps.TextChanged += delegate { _app.Cfg.CpuApps = _txtCpuApps.Text; _app.Save(); };
-            c2.Controls.Add(_txtCpuApps);
+            _btnParkFull = Btn(c1, "全核常开", 16, 34, 86, 26, delegate { SetPark("full"); });
+            _btnParkDefault = Btn(c1, "系统默认", 106, 34, 86, 26, delegate { SetPark("default"); });
+            _btnParkAggr = Btn(c1, "激进停放", 196, 34, 86, 26, delegate { SetPark("aggressive"); });
+            _btnParkAuto = Btn(c1, "跟随供电", 286, 34, 86, 26, delegate { SetPark("auto"); });
 
-            Btn(c2, "应用", 16, 134, 72, 28, delegate { ApplyCpuFromUi(); });
-            Btn(c2, "全核", 92, 134, 72, 28, delegate { SetCpuChecks(Cpu.MaskFor(0)); ApplyCpuFromUi(); });
-            Btn(c2, "选择应用", 168, 134, 88, 28, delegate { PickApp(); });
-            Btn(c2, "导入", 260, 134, 60, 28, delegate { ImportConfig(); });
-            Btn(c2, "导出", 324, 134, 60, 28, delegate { ExportConfig(); });
-            _lblCpuInfo = Lbl(c2, "", 16, 166, 376, 20, 8f, Theme.Dim, FontStyle.Regular);
+            Lbl(c1, "开启核心数", 16, 72, 120, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _trkPark = Trk(c1, 136, 66, 150, 1, 100, 100, OnParkPctChanged);
+            _lblParkPct = Lbl(c1, "—", 290, 72, 44, 20, 9f, Theme.Text, FontStyle.Bold);
+            Btn(c1, "应用", 336, 64, 44, 28, delegate { ApplyManualPark(); });
+            _trkPark.Value = Math.Max(1, Math.Min(100, _app.Cfg.ParkMinPct <= 0 ? 100 : _app.Cfg.ParkMinPct));
+            _lblParkPct.Text = _trkPark.Value + "%";
+
+            _lblPark = Lbl(c1, "", 16, 104, 360, 56, 7.5f, Theme.Dim, FontStyle.Regular);
+
+            Lbl(c1, "频率上限", 16, 176, 120, 20, 8.5f, Theme.Dim, FontStyle.Regular);
+            _trkFreq = Trk(c1, 140, 170, 168, 20, 100, 100, OnMaxFreqChanged);
+            _lblFreq = Lbl(c1, "—", 316, 176, 60, 20, 9f, Theme.Text, FontStyle.Bold);
+            _trkFreq.Value = Math.Max(20, Math.Min(100, _app.Cfg.CpuMaxPct <= 0 ? 100 : _app.Cfg.CpuMaxPct));
+            _lblFreq.Text = _trkFreq.Value + "%";
+            RefreshParkButtons();
 
             _cardHost = old;
             _syncing = true;
@@ -1868,6 +1830,8 @@ namespace RyzenTuner
             RefreshCpuUi();
             ApplyCpuCustomState();
         }
+
+        private void CpuMsg(string s) { TrayApp.Log("[CPU线程] " + s); }
 
         private ulong CurrentCpuMask()
         {
@@ -1936,8 +1900,7 @@ namespace RyzenTuner
                         if (e2 != null) err = e2; else { done++; targetPid = pid; }
                     }
                 }
-                if (_lblCpuInfo != null)
-                    _lblCpuInfo.Text = err != null ? err : ("已应用 " + Cpu.CountBits(mask) + " 线程到 " + done + " 个进程");
+                CpuMsg(err != null ? err : ("已应用 " + Cpu.CountBits(mask) + " 线程到 " + done + " 个进程"));
                 TrayApp.Log("CPU 亲和性: " + Cpu.CountBits(mask) + " 线程 -> " + names.Length + " 个应用, 成功 " + done);
                 return;
             }
@@ -1956,8 +1919,7 @@ namespace RyzenTuner
                 catch { }
                 finally { try { p.Dispose(); } catch { } }
             }
-            if (_lblCpuInfo != null)
-                _lblCpuInfo.Text = "已全局应用 " + Cpu.CountBits(mask) + " 线程（" + done + " 个进程）";
+            CpuMsg("已全局应用 " + Cpu.CountBits(mask) + " 线程（" + done + " 个进程）");
             TrayApp.Log("CPU 亲和性: 全局 " + Cpu.CountBits(mask) + " 线程, 进程数 " + done);
             return;
         }
@@ -1977,10 +1939,99 @@ namespace RyzenTuner
                 cb.Enabled = true;
                 cb.ForeColor = Theme.Text;
             }
-            if (!string.IsNullOrEmpty(_app.Cfg.PowerMode) && _lblCpuInfo != null)
-                _lblCpuInfo.Text = "已选功率模式：" + _app.Cfg.PowerMode + "，线程以模式为准";
             RefreshCpuModeButtons();
         }
+        private void OnMaxFreqChanged(object s, EventArgs e)
+        {
+            if (_syncing) return;
+            int pct = _trkFreq.Value;
+            _lblFreq.Text = pct + "%";
+            _app.Cfg.CpuMaxPct = pct;
+            Parking.SetMaxFreq(pct);
+            _app.Save();
+            TrayApp.Log("频率上限: " + pct + "%");
+        }
+        private void OnParkPctChanged(object s, EventArgs e)
+        {
+            if (_syncing) return;
+            _lblParkPct.Text = _trkPark.Value + "%";   // 仅预览，点「应用」才生效
+        }
+        private void ApplyManualPark()
+        {
+            int pct = Math.Max(1, Math.Min(100, _trkPark.Value));
+            _lblParkPct.Text = pct + "%";
+            _app.Cfg.ParkMinPct = pct;
+            _app.Cfg.ParkMode = "manual";
+            Parking.ManualPct = pct;
+            string desc;
+            bool ok = Parking.Apply("manual", out desc);
+            _app.Cfg.ParkApplied = desc;
+            _app.Save();
+            RefreshParkButtons();
+            TrayApp.Log("核心停放(手动): " + (ok ? desc : ("失败 " + (Parking.LastError ?? ""))));
+        }
+
+        private void SetPark(string mode)
+        {
+            _app.Cfg.ParkMode = mode;
+            string desc;
+            bool ok = Parking.Apply(mode, out desc);
+            _app.Cfg.ParkApplied = desc;
+            _app.Save();
+            RefreshParkButtons();
+            TrayApp.Log("核心停放: " + (ok ? desc : ("失败 " + (Parking.LastError ?? ""))));
+        }
+
+        private void EnforceParkMode()
+        {
+            if (string.IsNullOrEmpty(_app.Cfg.ParkMode)) return;
+            if ((DateTime.Now - _lastParkEnforce).TotalSeconds < 15) return;
+            _lastParkEnforce = DateTime.Now;
+            string desc;
+            Parking.Apply(_app.Cfg.ParkMode, out desc);
+        }
+
+        private void RefreshParkButtons()
+        {
+            string mode = _app.Cfg.ParkMode ?? "";
+            string[] ids = new string[] { "full", "default", "aggressive", "auto" };
+            Button[] bs = new Button[] { _btnParkFull, _btnParkDefault, _btnParkAggr, _btnParkAuto };
+            for (int i = 0; i < bs.Length; i++)
+            {
+                if (bs[i] == null) continue;
+                bool on = (mode == ids[i]);
+                bs[i].BackColor = on ? Theme.Accent : Theme.Btn;
+                bs[i].ForeColor = on ? Color.White : Theme.Text;
+                bs[i].FlatAppearance.MouseOverBackColor = on ? Theme.Accent : Color.FromArgb(60, Theme.Accent);
+                bs[i].FlatAppearance.MouseDownBackColor = on ? Theme.Accent : Theme.Btn;
+            }
+            if (_lblPark != null)
+            {
+                string modeName = "未选择";
+                switch (mode)
+                {
+                    case "full": modeName = "全核常开 100/100"; break;
+                    case "default": modeName = "系统默认 50/100"; break;
+                    case "aggressive": modeName = "激进停放（开启 1% 核心）"; break;
+                    case "auto": modeName = "插电默认 / 电池激进"; break;
+                    case "manual": modeName = "手动：开启 " + Math.Max(1, _app.Cfg.ParkMinPct) + "% 核心"; break;
+                }
+                int parked = Parking.ParkedCount();
+                string live = parked < 0 ? "实测：读取失败" : ("实测：停放 " + parked + " / " + Environment.ProcessorCount + " 线程");
+                string ov = "电源模式：已切到「平衡」（覆盖层会禁用停放）";
+                _lblPark.Text = "已写入：" + Parking.ReadCurrent() + Environment.NewLine +
+                                live + "　档位：" + modeName + Environment.NewLine + ov;
+            }
+        }
+        private void OnSwapSupplyChanged(object s, EventArgs e)
+        {
+            if (_syncing) return;
+            _app.Cfg.SwapSupply = _chkSwap.Checked;
+            PowerSource.CfgSwap = _chkSwap.Checked;
+            _app.Save();
+            RefreshStatus();
+        }
+
         private void OnCustomSupplyChanged(object s, EventArgs e)
         {
             if (_syncing) return;
@@ -2089,7 +2140,7 @@ namespace RyzenTuner
             dlg.Multiselect = true;
             dlg.Title = "选择要限制 CPU 线程的应用";
             if (dlg.ShowDialog() != DialogResult.OK) return;
-            StringBuilder sb = new StringBuilder(_txtCpuApps.Text ?? "");
+            StringBuilder sb = new StringBuilder((_app.Cfg.CpuApps ?? ""));
             int added = 0;
             foreach (string f in dlg.FileNames)
             {
@@ -2100,8 +2151,8 @@ namespace RyzenTuner
                     added++;
                 }
             }
-            _txtCpuApps.Text = sb.ToString().Trim();
-            if (_lblCpuInfo != null) _lblCpuInfo.Text = "已添加 " + added + " 个应用到列表";
+            _app.Cfg.CpuApps = sb.ToString().Trim(); _app.Save();
+            CpuMsg("已添加 " + added + " 个应用到列表");
         }
 
         private void ExportConfig()
@@ -2122,9 +2173,9 @@ namespace RyzenTuner
                 sb.AppendLine("TypecFast=" + _app.Cfg.TypecFast + "|" + _app.Cfg.TypecSlow + "|" + _app.Cfg.TypecTctl);
                 sb.AppendLine("DcinFast=" + _app.Cfg.DcinFast + "|" + _app.Cfg.DcinSlow + "|" + _app.Cfg.DcinTctl);
                 File.WriteAllText(dlg.FileName, sb.ToString(), Encoding.UTF8);
-                if (_lblCpuInfo != null) _lblCpuInfo.Text = "已导出到 " + Path.GetFileName(dlg.FileName);
+                CpuMsg("已导出到 " + Path.GetFileName(dlg.FileName));
             }
-            catch (Exception ex) { if (_lblCpuInfo != null) _lblCpuInfo.Text = "导出失败：" + ex.Message; }
+            catch (Exception ex) { CpuMsg("导出失败：" + ex.Message); }
         }
 
         private void ImportConfig()
@@ -2157,7 +2208,7 @@ namespace RyzenTuner
                                     else skipped += (skipped.Length > 0 ? ", " : "") + name;
                                 }
                                 _app.Cfg.CpuApps = keep.ToString().Trim();
-                                if (_txtCpuApps != null) _txtCpuApps.Text = _app.Cfg.CpuApps;
+                                
                                 applied++;
                                 break;
                             }
@@ -2198,10 +2249,9 @@ namespace RyzenTuner
 
                 _syncing = false;
                 ApplyCpuCustomState();
-                if (_lblCpuInfo != null)
-                    _lblCpuInfo.Text = "已导入 " + applied + " 项" + (skipped.Length > 0 ? "，跳过未安装：" + skipped : "");
+                CpuMsg("已导入 " + applied + " 项" + (skipped.Length > 0 ? "，跳过未安装：" + skipped : ""));
             }
-            catch (Exception ex) { if (_lblCpuInfo != null) _lblCpuInfo.Text = "导入失败：" + ex.Message; }
+            catch (Exception ex) { CpuMsg("导入失败：" + ex.Message); }
         }
 
         private static int IntOf(string s, int def)
@@ -2248,7 +2298,7 @@ namespace RyzenTuner
                 _app.Save();
                 ApplyCpuMask(mask2);
                 RefreshCpuModeButtons();
-                if (_lblCpuInfo != null) _lblCpuInfo.Text = "已取消模式：CPU 线程与自定义供电优先";
+                CpuMsg("已取消模式：CPU 线程与自定义供电优先");
                 _app.ApplyNow("power-mode-off");
                 return;
             }
@@ -2271,7 +2321,7 @@ namespace RyzenTuner
             if (_app.Cfg.CpuCustom)
             {
                 // 自定义线程优先：模式只记状态，不改亲和性
-                if (_lblCpuInfo != null) _lblCpuInfo.Text = "自定义线程生效中，功耗页模式不覆盖";
+                CpuMsg("自定义线程生效中，功耗页模式不覆盖");
                 RefreshCpuModeButtons();
                 return;
             }
@@ -2337,9 +2387,7 @@ namespace RyzenTuner
                 _cpuApplyTimer.Stop();
                 _cpuApplyTimer.Start();
             }
-            else if (_lblCpuInfo != null)
             {
-                _lblCpuInfo.Text = "已高亮模式，线程由模式决定（取消高亮后由此处接管）";
             }
         }
 
@@ -2365,10 +2413,8 @@ namespace RyzenTuner
 
         private void UpdateCpuInfo()
         {
-            if (_lblCpuInfo == null) return;
             int on = 0;
             foreach (CheckBox cb in _cpuChecks) if (cb.Checked) on++;
-            _lblCpuInfo.Text = "当前 " + on + " / " + Cpu.Cores + " 线程";
         }
 
         private void RefreshCpuUi()
@@ -2406,6 +2452,13 @@ namespace RyzenTuner
                 }
                 _app.Save();
                 Theme.LoadFrom(_app.Cfg);
+            PowerSource.CfgSwap = _app.Cfg.SwapSupply;
+            if (!string.IsNullOrEmpty(_app.Cfg.ParkMode))
+            {
+                string pd;
+                Parking.Apply(_app.Cfg.ParkMode, out pd);
+                _app.Cfg.ParkApplied = pd;
+            }
                 ApplyBackground();
                 _app.RebuildUi();
             }
@@ -3511,7 +3564,7 @@ namespace RyzenTuner
     // ------------------------------------------------------------------ 入口
     internal static class Program
     {
-        public const string AppVersion = "1.4.8";
+        public const string AppVersion = "1.8.0";
         [STAThread]
         private static void Main(string[] args)
         {
@@ -3548,6 +3601,32 @@ namespace RyzenTuner
                     }
                     tf.Close();
                 }
+                return;
+            }
+
+            string parkMode = GetArg(args, "--park");
+            if (parkMode != null)
+            {
+                string d0;
+                bool ok = Parking.Apply(parkMode, out d0);
+                TrayApp.Log("核心停放: " + (ok ? d0 : ("失败 " + (Parking.LastError ?? "-"))));
+                return;
+            }
+
+            string ecWatch = GetArg(args, "--ecwatch");
+            if (ecWatch != null)
+            {
+                string secArg = GetArg(args, "--seconds");
+                int secs = 30;
+                int.TryParse(secArg, out secs);
+                StringBuilder sb = new StringBuilder();
+                DateTime end = DateTime.Now.AddSeconds(secs);
+                while (DateTime.Now < end)
+                {
+                    sb.AppendLine(DateTime.Now.ToString("HH:mm:ss.fff") + "  " + PowerSource.Describe() + "  AC=" + Engine.OnAc);
+                    System.Threading.Thread.Sleep(500);
+                }
+                File.WriteAllText(ecWatch, sb.ToString(), Encoding.UTF8);
                 return;
             }
 
