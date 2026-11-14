@@ -183,6 +183,12 @@ namespace RyzenTuner
         public int CardOpacity { get; set; }
         public string BgImage { get; set; }
         public string CpuApps { get; set; }    // 多应用列表，换行分隔；空=全部进程
+        public bool SwapSupply { get; set; }   // Type-C/DC-IN 识别对调
+        public string ParkMode { get; set; }   // full/default/aggressive/auto // 核心停放
+        public string ParkApplied { get; set; } // 上次应用的描述
+        public int CpuMaxPct { get; set; }      // 频率上限百分比
+        public int ParkMinPct { get; set; }     // 手动停放最小核心数 %
+        public int ParkMaxParked { get; set; }  // 手动：最多停放核心数 0..31
         public bool CamAuto { get; set; }      // 摄像头自动亮度
         public int CamInterval { get; set; }   // 采样间隔（秒）
         public int CalMinLuma { get; set; }    // 校准：最暗时的画面亮度
@@ -403,6 +409,12 @@ namespace RyzenTuner
                 case "SupplySlow": s.SupplySlow = iv; break;
                 case "SupplyTctl": s.SupplyTctl = iv; break;
                 case "CpuApps": s.CpuApps = v; break;
+                case "SwapSupply": s.SwapSupply = v == "1" || v.Equals("true", StringComparison.OrdinalIgnoreCase); break;
+                case "ParkMode": s.ParkMode = v; break;
+                case "ParkApplied": s.ParkApplied = v; break;
+                case "CpuMaxPct": { int mxp; if (int.TryParse(v, out mxp)) s.CpuMaxPct = mxp; break; }
+                case "ParkMinPct": { int pmp; if (int.TryParse(v, out pmp)) s.ParkMinPct = pmp; break; }
+                case "ParkMaxParked": { int pmp2; if (int.TryParse(v, out pmp2)) s.ParkMaxParked = pmp2; break; }
                 case "GameAutoPerf": s.GameAutoPerf = bv; break;
                 case "BgImage": s.BgImage = v; break;
                 case "CardOpacity": s.CardOpacity = iv; break;
@@ -490,6 +502,12 @@ namespace RyzenTuner
             sb.AppendLine("SupplySlow=" + s.SupplySlow);
             sb.AppendLine("SupplyTctl=" + s.SupplyTctl);
             sb.AppendLine("CpuApps=" + (s.CpuApps ?? "").Replace("\r", " ").Replace("\n", "|"));
+            sb.AppendLine("SwapSupply=" + (s.SwapSupply ? "1" : "0"));
+            sb.AppendLine("ParkMode=" + (s.ParkMode ?? ""));
+            sb.AppendLine("ParkApplied=" + (s.ParkApplied ?? ""));
+            sb.AppendLine("CpuMaxPct=" + s.CpuMaxPct);
+            sb.AppendLine("ParkMinPct=" + s.ParkMinPct);
+            sb.AppendLine("ParkMaxParked=" + s.ParkMaxParked);
             sb.AppendLine("GameAutoPerf=" + s.GameAutoPerf);
             sb.AppendLine("BgImage=" + (s.BgImage ?? ""));
             sb.AppendLine("CardOpacity=" + s.CardOpacity);
@@ -712,6 +730,7 @@ namespace RyzenTuner
 
         private static int _driverState = -1;   // -1 未检测, 0 不可用, 1 可用
         private static string _cached;
+        public static bool CfgSwap;   // 由主程序从设置同步
         private static DateTime _cacheTime = DateTime.MinValue;
 
         private static bool EnsureDriver()
@@ -791,6 +810,158 @@ namespace RyzenTuner
         }
     }
 
+    // ------------------------------------------------------------------ 核心停放（Core Parking）
+    internal static class Parking
+    {
+        public static string LastError = null;
+        public static int ManualPct = 50;   // 手动模式：最小核心数百分比
+
+        private static bool Run(string args)
+        {
+            try
+            {
+                System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo("powercfg.exe", args);
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+                using (System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi))
+                {
+                    p.StandardOutput.ReadToEnd();
+                    p.StandardError.ReadToEnd();
+                    p.WaitForExit(4000);
+                    if (p.ExitCode != 0) { LastError = "powercfg " + args + " rc=" + p.ExitCode; return false; }
+                    return true;
+                }
+            }
+            catch (Exception ex) { LastError = ex.Message; return false; }
+        }
+
+        public static bool SetMaxFreq(int percent)
+        {
+            if (percent < 20) percent = 20;
+            if (percent > 100) percent = 100;
+            bool ok = true;
+            ok &= Run("/setacvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX " + percent);
+            ok &= Run("/setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR PROCTHROTTLEMAX " + percent);
+            ok &= Run("/setactive SCHEME_CURRENT");
+            return ok;
+        }
+
+        public static int GetMaxFreq()
+        {
+            return Query("PROCTHROTTLEMAX", true);
+        }
+        public static int ParkedCount()
+        {
+            int parked = 0;
+            try
+            {
+                var cat = new System.Diagnostics.PerformanceCounterCategory("Processor Information");
+                foreach (string inst in cat.GetInstanceNames())
+                {
+                    if (!inst.StartsWith("0,") || inst.IndexOf("_Total") >= 0) continue;
+                    try
+                    {
+                        using (var pc = new System.Diagnostics.PerformanceCounter("Processor Information", "Parking Status", inst, true))
+                            if (pc.NextValue() >= 1f) parked++;
+                    }
+                    catch { }
+                }
+                return parked;
+            }
+            catch { return -1; }
+        }
+        public static string ReadCurrent()
+        {
+            try
+            {
+                return "AC 最小 " + Query("CPMINCORES", true) + "% / 最大 " + Query("CPMAXCORES", true) + "%" +
+                       "　DC 最小 " + Query("CPMINCORES", false) + "% / 最大 " + Query("CPMAXCORES", false) + "%";
+            }
+            catch { return "读取失败"; }
+        }
+
+        private static int Query(string alias, bool ac)
+        {
+            try
+            {
+                System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo("powercfg.exe",
+                    "/q SCHEME_CURRENT SUB_PROCESSOR " + alias);
+                psi.UseShellExecute = false;
+                psi.CreateNoWindow = true;
+                psi.RedirectStandardOutput = true;
+                using (System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi))
+                {
+                    string outp = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(3000);
+                    bool inAc = ac;
+                    foreach (string line in outp.Split('\n'))
+                    {
+                        string l = line.Trim();
+                        if (l.Contains("交流") && ac) return HexToDec(l);
+                        if (l.Contains("直流") && !ac) return HexToDec(l);
+                    }
+                }
+            }
+            catch { }
+            return -1;
+        }
+
+        private static int HexToDec(string line)
+        {
+            int i = line.IndexOf("0x");
+            if (i < 0) return -1;
+            string hx = line.Substring(i + 2).Trim();
+            int v;
+            return int.TryParse(hx, System.Globalization.NumberStyles.HexNumber, null, out v) ? v : -1;
+        }
+        public static bool Apply(string mode, out string desc)
+        {
+            int acMin, acMax, dcMin, dcMax;
+            switch (mode)
+            {
+                case "full":       acMin = 100; acMax = 100; dcMin = 100; dcMax = 100; desc = "全核常开 100/100"; break;
+                case "aggressive": acMin = 1;   acMax = 100; dcMin = 1;   dcMax = 100; desc = "激进停放（开启 1% 核心）"; break;
+                case "manual":     { int mp = ManualPct < 1 ? 1 : (ManualPct > 100 ? 100 : ManualPct); acMin = mp; acMax = 100; dcMin = mp; dcMax = 100; desc = "手动：开启 " + mp + "% 核心"; break; }
+                case "auto":       acMin = 50;  acMax = 100; dcMin = 1;   dcMax = 100; desc = "插电默认 / 电池激进"; break;
+                default:           acMin = 50;  acMax = 100; dcMin = 50;  dcMax = 100; desc = "系统默认 50/100"; break;
+            }
+
+            // 停放时间常数（ParkControl 用的是 1/1，能让停放更快生效）
+            int inc = (mode == "aggressive" || mode == "auto") ? 1 : 3;
+            int dec = (mode == "aggressive" || mode == "auto") ? 1 : 10;
+
+            bool ok = true;
+            // 关键：电源模式覆盖层（最佳能效/最佳性能）会强制最小核心数 100%，必须先切回「平衡」
+            if (mode != "full")
+                ok &= Run("/overlaysetactive 00000000-0000-0000-0000-000000000000");
+            ok &= Run("/setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPINCREASETIME " + inc);
+            ok &= Run("/setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPINCREASETIME " + inc);
+            ok &= Run("/setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPDECREASETIME " + dec);
+            ok &= Run("/setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPDECREASETIME " + dec);
+            ok &= Run("/setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES " + acMin);
+            ok &= Run("/setacvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMAXCORES " + acMax);
+            ok &= Run("/setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMINCORES " + dcMin);
+            ok &= Run("/setdcvalueindex SCHEME_CURRENT SUB_PROCESSOR CPMAXCORES " + dcMax);
+            ok &= Run("/setactive SCHEME_CURRENT");
+
+            // 解锁隐藏项，让「电源选项」里能看到
+            try
+            {
+                const string baseKey = @"SYSTEM\CurrentControlSet\Control\Power\PowerSettings\54533251-82be-4824-96c1-47b60b740d00";
+                foreach (string g in new string[] { "0cc5b647-c1df-4637-891a-dec35c318583", "ea062031-0e34-4ff1-9b6d-eb1059334028" })
+                {
+                    using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(baseKey + "\\" + g, true))
+                        if (k != null) k.SetValue("Attributes", 2, Microsoft.Win32.RegistryValueKind.DWord);
+                }
+            }
+            catch { }
+
+            if (ok) LastError = null;
+            return ok;
+        }
+    }
     // ------------------------------------------------------------------ Core Audio 音量
     internal static class Audio
     {
